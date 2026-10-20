@@ -320,6 +320,16 @@ def run() -> None:
     app = App(root, Controller(journal, clipboard=lambda t: None))
     app.ctl.clipboard = app._clipboard
     root.protocol('WM_DELETE_WINDOW', app.close)
+
+    def on_error(exc, val, tb):   # в exe без консоли иначе ошибку никто не увидит
+        import traceback
+        messagebox.showerror(TITLE, f'Ошибка: {val}')
+        try:
+            (journal.db_path.parent / 'orthofill-errors.log').open('a', encoding='utf-8').write(
+                ''.join(traceback.format_exception(exc, val, tb)) + '\n')
+        except OSError:
+            pass
+    root.report_callback_exception = on_error
     root.mainloop()
 
 

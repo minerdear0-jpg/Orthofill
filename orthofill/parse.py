@@ -105,30 +105,43 @@ def detect_size(text):
     return None
 
 # Пункт записи про другое действие — не часть фразы о дуге
-_WIRE_STOP = re.compile(
-    r'лигатур|подвяз|эластик|явк|изгиб|юстир|гигиен|слизист|эрози|брекет|'
-    r'отклеи|выход|перелом|динамик|класс|моляр|клык|этап|зуб|переклей|'
-    r'пружин|недел')
-_NEGATION = re.compile(r'без\s+(?:замен|смен|изменен)|не\s+мен|оставл|прежн')
+_WIRE_STOP = (r'лигатур|подвяз|эластик|явк|изгиб|юстир|гигиен|слизист|эрози|брекет|'
+              r'отклеи|выход|перелом|динамик|класс|моляр|клык|этап|зуб|переклей|'
+              r'пружин|недел')
+# Слово про другое действие — отдельный «пункт», обрывающий фразу о дуге
+# (работает и в записи без запятых: «лигатурная дуга верх 16х25 нити явка 4 нед»)
+_SPLIT = re.compile(r'[;\n]|[.,](?!\d)|(\S*(?:' + _WIRE_STOP + r')\S*)')
+_NEGATION = re.compile(r'без\s+(?:замен|смен|изменен)|не\s+мен|\bостав|прежн')
+
+def _strong_wire(item):
+    """Дуга без слова «дуга»: размер + материал или челюсть + сечение 16х25."""
+    size, mat = detect_size(item), detect_material(item)
+    return bool(size and mat) or bool(size and size[1] and arch_marks(item))
 
 def _wire_items(n):
-    """Текст про дуги: непрерывная цепочка пунктов (через , ; . — но не
-    внутри числа), где есть «дуг», размер, материал или челюсть.
-    Пункт про лигатуры, эластики, явку и т.п. цепочку обрывает."""
-    items = [s.strip() for s in re.split(r'[;\n]|[.,](?!\d)', n)]
-    runs, cur, has_wire = [], [], False
+    """Текст про дуги: непрерывная цепочка пунктов, где есть «дуг», размер,
+    материал или челюсть. Слова про лигатуры, эластики, явку и т.п. цепочку
+    обрывают. Цепочка засчитывается, если в ней есть «дуг» или явная дуга."""
+    items = [p.strip() for p in _SPLIT.split(n) if p is not None]
+    runs, cur, ok = [], [], False
     for it in items + ['']:
-        wireish = bool(it) and not _WIRE_STOP.search(it) and (
-            'дуг' in it or detect_size(it) or detect_material(it)
-            or arch_marks(it))
+        wireish = bool(it) and not re.search(_WIRE_STOP, it) and (
+            'дуг' in it or detect_size(it) or detect_material(it) or arch_marks(it))
         if wireish:
             cur.append(it)
-            has_wire |= 'дуг' in it
+            ok |= 'дуг' in it or _strong_wire(it)
         else:
-            if cur and has_wire:
+            if cur and ok:
                 runs.append(', '.join(cur))
-            cur, has_wire = [], False
+            cur, ok = [], False
     return runs
+
+def wire_hint(n):
+    """В записи есть явный признак дуги (материал или сечение 16х25)."""
+    if _NEGATION.search(n):        # «оставили 14 нити» — дугу не меняли
+        return False
+    size = detect_size(n)
+    return detect_material(n) is not None or bool(size and size[1])
 
 def _spec(text):
     if _NEGATION.search(text):
@@ -186,19 +199,30 @@ def parse_wire_from_label(label):
 
 
 def parse_weeks(n):
-    m = re.search(r'(\d+)\s*(?:-?\s*х\s*)?(?:недел|нед)', n)
-    return int(m.group(1)) if m else None
+    """Срок явки — из фразы про явку («явка через 4 нед»), а не первое
+    «N нед» в записи («перепел на 2 недели» — не явка). Месяцы → ×4."""
+    frag = clause(n, r'явк|через', stops='.;,')
+    text = frag if frag else n
+    m = re.search(r'(\d+)\s*(?:-?х\s*)?нед', text)
+    if m:
+        return int(m.group(1))
+    m = re.search(r'(\d+)\s*(?:-?х\s*)?мес', text)
+    return int(m.group(1)) * 4 if m else None
+
+_BAD = r'неудовлетвор|не\s*удовл|неуд\b|плох'
+_GOOD = r'удовлетвор|удовл|хорош|норм'
 
 def _good_or_bad(n, topic):
-    """'unsatisfactory' / 'satisfactory' по фразе о topic; None — не упомянуто."""
+    """'unsatisfactory' / 'satisfactory'; 'unknown' — тема есть, значение не понято;
+    None — тема не упомянута."""
     frag = clause(n, topic, stops='.;,')
     if not frag:
         return None
-    if 'неудовлетвор' in frag or 'плох' in frag:
+    if re.search(_BAD, frag):
         return 'unsatisfactory'
-    if 'удовлетвор' in frag or 'хорош' in frag or 'норм' in frag:
+    if re.search(_GOOD, frag):
         return 'satisfactory'
-    return None
+    return 'unknown'
 
 def parse_hygiene(n):
     return _good_or_bad(n, r'гигиен')
@@ -207,10 +231,14 @@ def parse_bracket_state(n):
     return _good_or_bad(n, r'брекет\w*[\s-]*систем|состояни\w*\s+брекет')
 
 def parse_mucosa(n):
+    if re.search(r'без\s+эрози|эрози\w*\s+нет|нет\s+эрози', n):
+        return 'normal'
     if 'эрози' in n:
         return 'erosion'
     if re.search(r'слизист\w*[^.;,]*(норм|без\s+(?:видим|патолог|изменен))', n):
         return 'normal'
+    if 'слизист' in n:
+        return 'unknown'
     return None
 
 def parse_dynamics(n):
@@ -259,4 +287,17 @@ def extract_facts(raw: str) -> dict:
         'binding_arches': parse_binding_arches(n),
         'wire_adjustments': parse_wire_adjustments(n),
         'mentions_elastics': re.search(r'эластик|резин|тяг', n) is not None,
+        'mentions_visit': 'явк' in n,
+        'complaint_text': _complaint_text(n),
+        'classes_sided': re.search(r'(?:моляр|клык)[^.;]*?(?:справа|слева)|'
+                                   r'(?:справа|слева)[^.;]*?(?:моляр|клык)', n) is not None,
+        'wire_hint': wire_hint(n),
     }
+
+def _complaint_text(n):
+    """Что врач написал после «жалобы» (без «жалоб нет/не предъявляет»)."""
+    frag = clause(n, r'жалоб\w*', stops='.;,')
+    frag = re.sub(r'^жалоб\w*\s*:?\s*', '', frag).strip()
+    if not frag or re.search(r'^(нет|не\s+пред|отсутств)', frag):
+        return ''
+    return frag

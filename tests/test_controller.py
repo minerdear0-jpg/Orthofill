@@ -147,3 +147,45 @@ def test_cli_selftest_ui():
     r = subprocess.run([sys.executable, "-m", "orthofill", "--selftest-ui"],
                        cwd=ROOT, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr
+
+
+# ---------- ревью: I7, I8 ----------
+def test_save_reference_refuses_changed_note(ctl, order_xlsx):
+    ctl.open_file(order_xlsx)
+    text = ctl.generate("лигатурная, перепел").text
+    assert ctl.save_reference("лигатурная, лиса", text) == \
+        "Запись изменена — сформируйте протокол заново"
+    from orthofill.workbook import load_workbook_file
+    assert len(load_workbook_file(order_xlsx).references) == 1
+
+
+def test_save_reference_unexpected_error_is_shown(ctl, order_xlsx, monkeypatch):
+    import orthofill.controller as cmod
+    ctl.open_file(order_xlsx)
+    text = ctl.generate("лигатурная").text
+
+    def boom(*a, **k):
+        raise OSError("диск переполнен")
+    monkeypatch.setattr(cmod, "append_reference", boom)
+    assert ctl.save_reference("лигатурная", text) == "✗ Ошибка: диск переполнен"
+
+
+def test_open_file_unexpected_error_is_shown(ctl, order_xlsx, monkeypatch):
+    import orthofill.controller as cmod
+
+    def boom(*a, **k):
+        raise ValueError("битый файл")
+    monkeypatch.setattr(cmod, "load_workbook_file", boom)
+    ctl.open_file(order_xlsx)
+    assert ctl.workbook is None and ctl.file_status == "✗ Ошибка: битый файл"
+
+
+def test_generate_unexpected_error_is_shown(ctl, clip, order_xlsx, monkeypatch):
+    import orthofill.controller as cmod
+    ctl.open_file(order_xlsx)
+
+    def boom(*a, **k):
+        raise RuntimeError("сбой")
+    monkeypatch.setattr(cmod, "build_protocol", boom)
+    r = ctl.generate("лигатурная")
+    assert r.status == "✗ Ошибка: сбой" and not r.copied and clip == []

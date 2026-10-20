@@ -41,6 +41,7 @@ class Controller:
         self.last_protocol: Protocol | None = None
         self.last_entry_id: int | None = None
         self._last_shown = ''      # текст, выданный программой или уже скопированный
+        self._last_raw = ''        # запись, по которой сформирован last_protocol
 
     # ---------- файл ----------
     def startup(self) -> None:
@@ -59,6 +60,10 @@ class Controller:
         except WorkbookError as e:
             self.workbook, self.details = None, [str(e)]
             self.file_status = f'✗ {e}'
+            return
+        except Exception as e:     # непредвиденное — показать, а не упасть молча
+            self.workbook, self.details = None, [repr(e)]
+            self.file_status = f'✗ Ошибка: {e}'
             return
         self.workbook = wb
         self.journal.set_setting('last_file', str(path))
@@ -99,8 +104,11 @@ class Controller:
             return fail('Файл содержит ошибки — откройте «подробнее»')
         if not raw.strip():
             return fail('Введите краткую запись')
-        p = build_protocol(self.workbook, raw)
-        self.last_protocol = p
+        try:
+            p = build_protocol(self.workbook, raw)
+        except Exception as e:
+            return fail(f'✗ Ошибка: {e}')
+        self.last_protocol, self._last_raw = p, raw
         self.last_entry_id = self.journal.log_generate(raw, p, self.workbook.sha256)
         self.clipboard(p.text)
         self.journal.log_copy(self.last_entry_id, p.text)
@@ -123,11 +131,15 @@ class Controller:
         wb = self.workbook
         if wb is None or self.last_protocol is None:
             return 'Сначала сформируйте протокол'
+        if raw.strip() != self._last_raw.strip():
+            return 'Запись изменена — сформируйте протокол заново'
         lines = lines_for_reference(wb, self.last_protocol, final_text)
         try:
             case_id = append_reference(wb.path, raw.strip(), lines)
         except FileLockedError as e:
             return str(e)
+        except Exception as e:
+            return f'✗ Ошибка: {e}'
         if self.last_entry_id is not None:
             self.journal.mark_reference(self.last_entry_id, case_id)
         self.open_file(wb.path)

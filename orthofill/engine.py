@@ -127,7 +127,10 @@ class _Ctx:
             self.defaults.append(label)
 
 
-def _good_bad(children, value, ctx, default_label):
+def _good_bad(children, value, ctx, default_label, topic):
+    if value == 'unknown':
+        ctx.warn(f'{topic}: значение не распознано — выберите вручную')
+        return None
     if value == 'unsatisfactory':
         hit = _first(children, lambda t: 'неудовлетвор' in t)
         if hit:
@@ -159,6 +162,9 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
         return _first(ch, lambda t: 'рабоч' in t)
 
     if kind == 'mucosa':
+        if f['mucosa'] == 'unknown':
+            ctx.warn('слизистая: значение не распознано — выберите вручную')
+            return None
         if f['mucosa'] == 'erosion':
             hit = _first(ch, lambda t: 'эрози' in t)
             if hit:
@@ -168,16 +174,20 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
         return _first(ch, lambda t: 'без видимых' in t or 'норм' in t) or ch[0]
 
     if kind == 'hygiene':
-        return _good_bad(ch, f['hygiene'], ctx, 'гигиена удовлетворительная')
+        return _good_bad(ch, f['hygiene'], ctx, 'гигиена удовлетворительная', 'гигиена')
 
     if kind == 'bracket':
-        return _good_bad(ch, f['bracket_state'], ctx, 'брекет-система в порядке')
+        return _good_bad(ch, f['bracket_state'], ctx, 'брекет-система в порядке',
+                         'брекет-система')
 
     if kind == 'relation':
         g = norm(group.text)
         cls = f['classes']['molar' if 'моляр' in g else 'canine']
         if cls is None:
             return None
+        if f['classes_sided']:
+            ctx.warn('класс по сторонам (справа/слева) не поддерживается — '
+                     'проверьте соотношение моляров и клыков')
         side = 'справа' if 'справа' in g else 'слева'
         return _first(ch, lambda t: side in t and _class_in(t) == cls)
 
@@ -194,6 +204,8 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
         for c in ch:
             la, ls, lm = parse_wire_from_label(c.text)
             if la in (arch, None) and ls == size and not (material and lm and material != lm):
+                if not material and lm:
+                    ctx.default(f'материал дуги {lm}')
                 return c
         label = '×'.join(f'0.0{x}' for x in size if x) + '"'
         if material:
@@ -213,17 +225,27 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
 
     if kind == 'binding':
         arches = f['binding_arches']
-        if not f['binding'] or arches not in ('upper', 'lower'):
+        if not f['binding']:
+            return None
+        if arches not in ('upper', 'lower'):
+            ctx.warn('подвязывание: челюсть не распознана — выберите вручную')
             return None
         key = 'верхн' if arches == 'upper' else 'нижн'
         return _first(ch, lambda t: key in t)
 
     if kind == 'elastics':
+        hits = []
         for c in ch:
-            words = re.findall(r'[а-яa-z]+', norm(c.text))
-            if words and all(stem_in(word_stem(w), ctx.n) for w in words if len(w) >= 3):
-                return c
-        if f['mentions_elastics']:
+            words = [w for w in re.findall(r'[а-яa-z]+', norm(c.text)) if len(w) >= 3]
+            if words and all(stem_in(word_stem(w), ctx.n) for w in words):
+                if not _cancelled(ctx.n, word_stem(words[0])):
+                    hits.append(c)
+        if len(hits) > 1:
+            names = ', '.join(f'«{c.text}»' for c in hits)
+            ctx.warn(f'эластики: несколько вариантов ({names}) — в протокол попал только первый')
+        if hits:
+            return hits[0]
+        if f['mentions_elastics'] and not _cancelled(ctx.n, r'эластик|резин|тяг'):
             ctx.warn('эластики упомянуты, но вариант не найден в классификаторе')
         return None
 
@@ -249,6 +271,10 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
             return None
         w = f['weeks']
         if w is None:
+            if f['mentions_visit']:
+                default = next((c for c, k in numbered if k == 4), numbered[0][0])
+                ctx.warn(f'явка: срок не распознан, выбрано «{default.text}» — проверьте')
+                return default
             ctx.default('явка 4 нед')
             w = 4
         exact = next((c for c, k in numbered if k == w), None)
@@ -275,17 +301,34 @@ def _select_complaint(section: Item, ctx: _Ctx) -> Item | None:
             if hit:
                 return hit
     default = _first(ch, lambda t: re.search(r'не\s+пред[ъь]явл', t)) or (ch[0] if ch else None)
-    hit = _best_by_words([c for c in ch if c is not default], n)
-    if hit:
-        return hit
+    # Новые жалобы ищем только в том, что написано после «жалобы…»,
+    # иначе «брекет-система удовлетворительная» дала бы «на отклеивание брекета»
+    said = ctx.f['complaint_text']
+    if said:
+        hit = _best_by_words([c for c in ch if c is not default], said)
+        if hit:
+            return hit
+        ctx.warn(f'жалоба не распознана: «{said}» — выберите вручную')
+        return default
     ctx.default('жалоб нет')
     return default
+
+
+def _cancelled(n: str, stem_rx: str) -> bool:
+    """Назначение отменено: «перепел отменен», «без эластиков», «сняли резинки»."""
+    for m in re.finditer(stem_rx, n):
+        start = max(0, max(n.rfind(c, 0, m.start()) for c in ',.;') + 1)
+        ends = [p for p in (n.find(c, m.end()) for c in ',.;') if p != -1]
+        part = n[start:min(ends) if ends else len(n)]
+        if re.search(r'отмен|\bсня[лт]|\bбез\b|\bне\s+(?:носит|назнач)', part):
+            return True
+    return False
 
 
 def _orphan_applies(item: Item, ctx: _Ctx) -> bool:
     t, st = norm(item.text), ctx.f['system_type']
     if 'фиксаци' in t and 'лигатур' in t:
-        return st != 'self_ligating'
+        return st == 'ligature'
     if 'клипс' in t:
         return st == 'self_ligating'
     return _best_by_words([item], ctx.n) is not None
@@ -321,6 +364,8 @@ def _render(group: Item, sel: Item, mode: str | None) -> list[tuple[str, str]]:
 
 def build_protocol(wb: Workbook, raw: str) -> Protocol:
     ctx = _Ctx(raw)
+    if ctx.f['system_type'] is None:
+        ctx.warn('тип системы не распознан (лигатурная / самолигирующая)')
     modes = _render_modes(wb)
     lines: list[tuple[str, str]] = []
     for section in wb.sections:
@@ -339,6 +384,8 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
                     out.append((item.id, item.text))
         if out:
             lines += [(section.id, section.text)] + out
+    if ctx.f['wire_hint'] and not ctx.f['wires']:
+        ctx.warn('дуга: упоминание не распознано — проверьте вручную')
     return Protocol(lines, ctx.warnings, ctx.defaults)
 
 

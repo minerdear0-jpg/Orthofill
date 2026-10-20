@@ -54,7 +54,7 @@ def test_new_elastic_option(order_xlsx_with):
 
 
 def test_new_visit_option(order_xlsx_with):
-    p = build_protocol(order_xlsx_with(("5d5", "3 недели.")), "явка через 3 недели")
+    p = build_protocol(order_xlsx_with(("5d5", "3 недели.")), "лигатурная, явка через 3 недели")
     assert ("5d5", "3 недели.") in p.lines and not p.warnings
 
 
