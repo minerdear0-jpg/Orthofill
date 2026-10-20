@@ -1,0 +1,10 @@
+.superpowers/
+dist/
+build/
+*.db
+*.bak.xlsx
+order.backup.xlsx
+__pycache__/
+.venv/
+.pytest_cache/
+*.spec
