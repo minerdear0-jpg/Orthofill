@@ -138,3 +138,12 @@ def test_cli_raw_mode():
                         "замена дуги верх 14x25 ss"], cwd=ROOT, capture_output=True, text=True)
     assert r.returncode == 0 and r.stdout.startswith("Жалобы: активация")
     assert "нет в классификаторе" in r.stderr
+
+
+@pytest.mark.skipif(sys.platform != "win32" and not (
+        __import__("os").environ.get("DISPLAY") or __import__("os").environ.get("WAYLAND_DISPLAY")),
+    reason="нужен дисплей")
+def test_cli_selftest_ui():
+    r = subprocess.run([sys.executable, "-m", "orthofill", "--selftest-ui"],
+                       cwd=ROOT, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr

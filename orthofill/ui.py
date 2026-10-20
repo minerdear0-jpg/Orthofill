@@ -321,3 +321,18 @@ def run() -> None:
     app.ctl.clipboard = app._clipboard
     root.protocol('WM_DELETE_WINDOW', app.close)
     root.mainloop()
+
+
+def selftest() -> int:
+    """Окно с темой создаётся и закрывается; 0 — всё на месте."""
+    try:
+        root = tk.Tk()
+        import sv_ttk
+        sv_ttk.set_theme('light')
+        ttk.Button(root, text='Проверка', style='Accent.TButton').pack()
+        root.update()
+        root.destroy()
+        return 0
+    except Exception as e:
+        print(f'selftest-ui: {e}', file=sys.stderr)
+        return 1

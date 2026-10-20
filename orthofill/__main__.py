@@ -16,7 +16,12 @@ def main(argv=None) -> int:
     ap.add_argument('--test', metavar='XLSX', help='сверить программу с эталонами (C–F)')
     ap.add_argument('--xlsx', help='файл классификатора для --raw')
     ap.add_argument('--raw', help='краткая запись врача → протокол в stdout')
+    ap.add_argument('--selftest-ui', action='store_true', help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+
+    if args.selftest_ui:      # проверка сборки: tkinter + тема загружаются
+        from orthofill.ui import selftest
+        return selftest()
 
     if not (args.check or args.test or args.raw):
         from orthofill.ui import run
