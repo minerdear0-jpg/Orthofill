@@ -1,0 +1,95 @@
+"""Память программы (SQLite): журнал записей и протоколов, снимки
+классификатора, настройки. xlsx врача остаётся источником правды."""
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+DB_NAME = 'orthofill.db'
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS classifier_snapshots (
+    sha256 TEXT PRIMARY KEY, file_name TEXT, loaded_at TEXT, content_json TEXT);
+CREATE TABLE IF NOT EXISTS entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT, raw TEXT, generated TEXT,
+    warnings_json TEXT, defaults_json TEXT, sha256 TEXT,
+    copied_text TEXT, copied_at TEXT, reference_case_id TEXT);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
+PRAGMA user_version = 1;
+"""
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec='seconds')
+
+
+def _app_dir() -> Path:
+    """Папка программы: рядом с exe в сборке, корень проекта при разработке."""
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+def _writable(p: Path) -> bool:
+    try:
+        with tempfile.TemporaryFile(dir=p):
+            return True
+    except OSError:
+        return False
+
+
+def data_dir() -> Path:
+    d = _app_dir()
+    if _writable(d):
+        return d
+    base = os.environ.get('LOCALAPPDATA') or str(Path.home() / 'AppData' / 'Local')
+    d = Path(base) / 'Orthofill'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+class Journal:
+    def __init__(self, db_path: Path):
+        self.db_path = Path(db_path)
+        self._db = sqlite3.connect(self.db_path)
+        self._db.executescript(_SCHEMA)
+
+    def _exec(self, sql: str, args=()) -> sqlite3.Cursor:
+        with self._db:
+            return self._db.execute(sql, args)
+
+    def snapshot(self, wb) -> None:
+        content = json.dumps(
+            {'items': [[it.id, it.text] for it in wb.items],
+             'references': [[r.case_id, r.raw, r.lines] for r in wb.references]},
+            ensure_ascii=False)
+        self._exec('INSERT OR IGNORE INTO classifier_snapshots VALUES (?,?,?,?)',
+                   (wb.sha256, wb.path.name, _now(), content))
+
+    def log_generate(self, raw: str, protocol, sha256: str) -> int:
+        cur = self._exec(
+            'INSERT INTO entries (created_at, raw, generated, warnings_json, defaults_json, sha256)'
+            ' VALUES (?,?,?,?,?,?)',
+            (_now(), raw, protocol.text, json.dumps(protocol.warnings, ensure_ascii=False),
+             json.dumps(protocol.defaults, ensure_ascii=False), sha256))
+        return cur.lastrowid
+
+    def log_copy(self, entry_id: int, text: str) -> None:
+        self._exec('UPDATE entries SET copied_text=?, copied_at=? WHERE id=?',
+                   (text, _now(), entry_id))
+
+    def mark_reference(self, entry_id: int, case_id: str) -> None:
+        self._exec('UPDATE entries SET reference_case_id=? WHERE id=?', (case_id, entry_id))
+
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        row = self._db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        return row[0] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._exec('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, value))
