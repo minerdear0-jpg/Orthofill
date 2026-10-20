@@ -71,3 +71,53 @@ def test_no_header(tmp_path):
 def test_missing_file(tmp_path):
     with pytest.raises(WorkbookError):
         load_workbook_file(tmp_path / 'нет.xlsx')
+
+
+# ---------- «Сохранить как эталон» ----------
+from orthofill.engine import build_protocol, check_references  # noqa: E402
+from orthofill.workbook import (FileLockedError, append_reference,  # noqa: E402
+                                lines_for_reference)
+
+
+def test_lines_for_reference_keeps_codes_and_marks_edits(order_xlsx):
+    wb = load_workbook_file(order_xlsx)
+    p = build_protocol(wb, "лигатурная, перепел")
+    texts = p.text.splitlines()
+    i_ok = texts.index("Перепел")
+    texts[i_ok] = "  Перепел "                                  # пробелы — не правка
+    texts.insert(1, "на отклеивание брекета.")                  # текст пункта 1b
+    texts.append("Дополнительно: беседа о гигиене.")            # своя строка врача
+    lines = lines_for_reference(wb, p, "\n".join(texts))
+    assert ("4f1", "Перепел") in lines
+    assert ("1b", "на отклеивание брекета.") in lines
+    assert lines[-1] == ("", "Дополнительно: беседа о гигиене.")
+
+
+def test_lines_for_reference_skips_blank_lines(order_xlsx):
+    wb = load_workbook_file(order_xlsx)
+    p = build_protocol(wb, "лигатурная")
+    assert lines_for_reference(wb, p, p.text + "\n\n") == p.lines
+
+
+def test_append_reference_roundtrip(order_xlsx):
+    wb = load_workbook_file(order_xlsx)
+    p = build_protocol(wb, "лигатурная, перепел")
+    cid = append_reference(order_xlsx, "лигатурная, перепел", p.lines)
+    wb2 = load_workbook_file(order_xlsx)
+    assert cid == "2" and wb2.references[-1].raw == "лигатурная, перепел"
+    assert wb2.references[-1].lines == p.lines and len(wb2.items) == 124
+    assert order_xlsx.with_name("order.bak.xlsx").exists()
+    assert all(r.ok for r in check_references(wb2))
+
+
+def test_append_reference_locked_file(order_xlsx, monkeypatch):
+    import openpyxl
+    before = order_xlsx.read_bytes()
+
+    def locked(*a, **k):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(openpyxl.Workbook, "save", locked)
+    with pytest.raises(FileLockedError) as e:
+        append_reference(order_xlsx, "лигатурная", [("1", "Жалобы: активация")])
+    assert str(e.value) == "Закройте файл в Excel и повторите"
+    assert order_xlsx.read_bytes() == before
