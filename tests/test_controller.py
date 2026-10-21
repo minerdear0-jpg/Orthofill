@@ -6,7 +6,6 @@ import pytest
 
 from orthofill.controller import Controller, layout_mode
 from orthofill.journal import Journal
-from orthofill.workbook import FileLockedError
 
 from conftest import ORDER, ROOT
 
@@ -29,23 +28,21 @@ def test_layout_mode():
 
 
 def test_no_file(ctl):
-    assert ctl.file_status == "Файл не открыт"
-    assert ctl.generate("лигатурная").status == "Сначала откройте файл классификатора"
+    assert ctl.file_status == "Пресетов нет — импортируйте xlsx"
+    assert ctl.generate("лигатурная").status == "Сначала импортируйте пресет (xlsx)"
 
 
 def test_file_status_ok(ctl, order_xlsx):
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     assert ctl.file_status == "✓ пунктов: 124 · эталоны 1/1"
-    assert ctl.journal.get_setting("last_file") == str(order_xlsx)
+    assert ctl.journal.get_setting("preset_id") == str(ctl.preset_id)
+    assert ctl.workbook.name == "order"
 
 
 def test_file_status_mismatch(ctl, order_xlsx):
-    from orthofill.engine import build_protocol
-    from orthofill.workbook import append_reference, load_workbook_file
-    lines = build_protocol(load_workbook_file(order_xlsx), "лигатурная").lines
-    lines = [(c, "6 недель.") if c == "5d2" else (c, t) for c, t in lines]
-    append_reference(order_xlsx, "лигатурная", lines)
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
+    text = ctl.generate("лигатурная").text.replace("4 недели.", "6 недель.")
+    ctl.save_reference("лигатурная", text)
     assert ctl.file_status == "⚠ эталоны 1/2 — подробнее"
     assert any("эталон 2" in d for d in ctl.details)
 
@@ -57,13 +54,14 @@ def test_file_with_problems_blocks_generate(ctl, tmp_path):
     for r in [("ID_CLASS", "CLASS_LIST"), ("1", "Жалобы:"), ("1", "дубль")]:
         xl.active.append(r)
     xl.save(p)
-    ctl.open_file(p)
+    ctl.import_xlsx(p)
     assert ctl.file_status == "✗ ошибки в файле: 1 — подробнее"
-    assert ctl.generate("x").status == "Файл содержит ошибки — откройте «подробнее»"
+    assert ctl.presets.list() == [] and ctl.workbook is None
+    assert ctl.generate("x").status == "Сначала импортируйте пресет (xlsx)"
 
 
 def test_generate_copies_and_logs(ctl, clip, order_xlsx):
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     r = ctl.generate(REF_RAW)
     assert r.copied and r.status == "Скопировано в буфер" and clip == [r.text]
     assert r.text.splitlines()[0] == "Жалобы: активация"
@@ -72,31 +70,18 @@ def test_generate_copies_and_logs(ctl, clip, order_xlsx):
 
 
 def test_generate_defaults_line(ctl, order_xlsx):
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     assert ctl.generate("лигатурная").defaults_line.startswith("по умолчанию: жалоб нет, этап рабочий")
 
 
 def test_generate_empty_raw(ctl, clip, order_xlsx):
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     r = ctl.generate("   \n")
     assert r.status == "Введите краткую запись" and not r.copied and clip == []
 
 
-def test_startup_missing_last_file(ctl, tmp_path):
-    ctl.journal.set_setting("last_file", str(tmp_path / "пропал.xlsx"))
-    ctl.startup()
-    assert ctl.workbook is None
-    assert ctl.file_status == "Файл не найден — откройте файл классификатора"
-
-
-def test_startup_opens_last_file(ctl, order_xlsx):
-    ctl.journal.set_setting("last_file", str(order_xlsx))
-    ctl.startup()
-    assert ctl.workbook is not None
-
-
 def test_regenerate_needs_confirm_after_edit(ctl, order_xlsx):
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     assert not ctl.needs_confirm_regenerate("")
     text = ctl.generate("лигатурная").text
     assert not ctl.needs_confirm_regenerate(text)
@@ -106,27 +91,17 @@ def test_regenerate_needs_confirm_after_edit(ctl, order_xlsx):
 
 
 def test_copy_logs(ctl, clip, order_xlsx):
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     ctl.generate("лигатурная")
     assert ctl.copy("правленый") == "Скопировано в буфер" and clip[-1] == "правленый"
 
 
 def test_save_reference(ctl, order_xlsx):
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     text = ctl.generate("лигатурная, перепел").text
-    assert ctl.save_reference("лигатурная, перепел", text) == "Эталон 2 сохранён в order.xlsx"
+    assert ctl.save_reference("лигатурная, перепел", text) == "Эталон 2 сохранён в пресет «order»"
     assert ctl.file_status == "✓ пунктов: 124 · эталоны 2/2"
-
-
-def test_save_reference_locked(ctl, order_xlsx, monkeypatch):
-    import orthofill.controller as cmod
-    ctl.open_file(order_xlsx)
-    text = ctl.generate("лигатурная").text
-
-    def locked(*a, **k):
-        raise FileLockedError()
-    monkeypatch.setattr(cmod, "append_reference", locked)
-    assert ctl.save_reference("лигатурная", text) == "Закройте файл в Excel и повторите"
+    assert ctl.needs_export_before_update(ctl.preset_id)
 
 
 def test_cli_test_mode():
@@ -154,53 +129,43 @@ def test_cli_selftest_ui():
 
 # ---------- ревью: I7, I8 ----------
 def test_save_reference_refuses_changed_note(ctl, order_xlsx):
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     text = ctl.generate("лигатурная, перепел").text
     assert ctl.save_reference("лигатурная, лиса", text) == \
         "Запись изменена — сформируйте протокол заново"
-    from orthofill.workbook import load_workbook_file
-    assert len(load_workbook_file(order_xlsx).references) == 1
+    assert len(ctl.presets.load(ctl.preset_id).references) == 1
 
 
 def test_save_reference_unexpected_error_is_shown(ctl, order_xlsx, monkeypatch):
     import orthofill.controller as cmod
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     text = ctl.generate("лигатурная").text
 
     def boom(*a, **k):
         raise OSError("диск переполнен")
-    monkeypatch.setattr(cmod, "append_reference", boom)
+    monkeypatch.setattr(ctl.presets, "add_reference", boom)
     assert ctl.save_reference("лигатурная", text) == "✗ Ошибка: диск переполнен"
 
 
-def test_open_file_unexpected_error_is_shown(ctl, order_xlsx, monkeypatch):
+def test_import_unexpected_error_is_shown(ctl, order_xlsx, monkeypatch):
     import orthofill.controller as cmod
 
     def boom(*a, **k):
         raise ValueError("битый файл")
     monkeypatch.setattr(cmod, "load_workbook_file", boom)
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     assert ctl.workbook is None and ctl.file_status == "✗ Ошибка: битый файл"
 
 
 def test_generate_unexpected_error_is_shown(ctl, clip, order_xlsx, monkeypatch):
     import orthofill.controller as cmod
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
 
     def boom(*a, **k):
         raise RuntimeError("сбой")
     monkeypatch.setattr(cmod, "build_protocol", boom)
     r = ctl.generate("лигатурная")
     assert r.status == "✗ Ошибка: сбой" and not r.copied and clip == []
-
-
-def test_save_reference_file_renamed(ctl, order_xlsx):
-    """Диагностика 21.10: файл переименовали, пока программа была открыта."""
-    ctl.open_file(order_xlsx)
-    text = ctl.generate("лигатурная").text
-    order_xlsx.rename(order_xlsx.with_name("order-new-aktiv.xlsx"))
-    msg = ctl.save_reference("лигатурная", text)
-    assert "не найден" in msg and "Открыть файл" in msg
 
 
 def test_cli_check_bad_file_is_friendly(tmp_path):
@@ -213,3 +178,96 @@ def test_cli_check_bad_file_is_friendly(tmp_path):
                        capture_output=True, encoding="utf-8", cwd=ROOT)
     assert r.returncode == 2 and "Traceback" not in r.stderr
     assert "ID_CLASS" in r.stdout + r.stderr
+
+
+# ---------- пресеты (0.2) ----------
+def test_startup_migrates_last_file(ctl, order_xlsx):
+    ctl.journal.set_setting("last_file", str(order_xlsx))
+    ctl.startup()
+    assert ctl.workbook.name == "order" and ctl.file_status.startswith("✓")
+
+
+def test_startup_missing_last_file(ctl, tmp_path):
+    ctl.journal.set_setting("last_file", str(tmp_path / "пропал.xlsx"))
+    ctl.startup()
+    assert ctl.workbook is None and ctl.file_status == "Пресетов нет — импортируйте xlsx"
+
+
+def test_startup_restores_preset(ctl, order_xlsx, tmp_path, clip):
+    ctl.import_xlsx(order_xlsx)
+    ctl2 = Controller(Journal(tmp_path / "j.db"), clip.append)
+    ctl2.startup()
+    assert ctl2.preset_id == ctl.preset_id and ctl2.workbook.name == "order"
+
+
+def test_startup_unknown_preset_falls_back(ctl, order_xlsx):
+    ctl.import_xlsx(order_xlsx)
+    ctl.journal.set_setting("preset_id", "999")
+    ctl.startup()
+    assert ctl.workbook is not None and ctl.preset_id != 999
+
+
+def test_import_bad_file_keeps_current(ctl, order_xlsx, tmp_path):
+    import openpyxl
+    ctl.import_xlsx(order_xlsx)
+    pid = ctl.preset_id
+    bad = tmp_path / "kons.xlsx"
+    openpyxl.Workbook().save(bad)
+    ctl.import_xlsx(bad, update_id=pid)
+    assert ctl.preset_id == pid and ctl.file_status.startswith("✗")
+    assert any("ID_CLASS" in d for d in ctl.details)
+    assert len(ctl.presets.list()) == 1 and ctl.workbook is not None
+    assert ctl.generate("лигатурная").copied           # прежний пресет работает
+
+
+def test_import_update(ctl, order_xlsx, order_xlsx_with):
+    ctl.import_xlsx(order_xlsx)
+    pid = ctl.preset_id
+    order_xlsx_with(("4f7", "Слон"))                    # тот же файл, новый пункт
+    ctl.import_xlsx(order_xlsx, update_id=pid)
+    assert ctl.preset_id == pid and "4f7" in ctl.workbook.by_id
+    assert len(ctl.presets.list()) == 1
+
+
+def test_export_then_reimport(ctl, order_xlsx, tmp_path):
+    ctl.import_xlsx(order_xlsx)
+    text = ctl.generate("лигатурная, перепел").text
+    ctl.save_reference("лигатурная, перепел", text)
+    out = tmp_path / "выгрузка.xlsx"
+    assert ctl.export_xlsx(out) == "Выгружено: выгрузка.xlsx"
+    assert not ctl.needs_export_before_update(ctl.preset_id)
+    ctl.import_xlsx(out)
+    assert ctl.workbook.name == "выгрузка" and len(ctl.workbook.references) == 2
+    assert ctl.file_status == "✓ пунктов: 124 · эталоны 2/2"
+
+
+def test_export_locked(ctl, order_xlsx, tmp_path, monkeypatch):
+    import orthofill.controller as cmod
+    ctl.import_xlsx(order_xlsx)
+    ctl.save_reference("лигатурная", ctl.generate("лигатурная").text)
+
+    def locked(*a, **k):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(cmod, "export_workbook", locked)
+    assert "закройте" in ctl.export_xlsx(tmp_path / "x.xlsx")
+    assert ctl.needs_export_before_update(ctl.preset_id)
+
+
+def test_switch_preset(ctl, order_xlsx, tmp_path):
+    import shutil
+    other = tmp_path / "консультация.xlsx"
+    shutil.copy(order_xlsx, other)
+    ctl.import_xlsx(order_xlsx)
+    first = ctl.preset_id
+    ctl.import_xlsx(other)
+    assert ctl.workbook.name == "консультация"
+    ctl.generate("лигатурная")
+    ctl.switch_preset(first)
+    assert ctl.workbook.name == "order" and ctl.last_protocol is None
+    assert ctl.journal.get_setting("preset_id") == str(first)
+
+
+def test_generate_without_copy(ctl, clip, order_xlsx):
+    ctl.import_xlsx(order_xlsx)
+    r = ctl.generate("лигатурная", copy=False)
+    assert r.text and not r.copied and clip == [] and ctl.last_entry_id is not None

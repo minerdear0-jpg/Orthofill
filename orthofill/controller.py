@@ -13,8 +13,11 @@ from .diag import DiagLog, text_diff
 from .engine import Protocol, build_protocol, check_references, rule_warnings
 from .parse import extract_facts
 from .journal import Journal
-from .workbook import (FileLockedError, Workbook, WorkbookError, append_reference,
-                       lines_for_reference, load_workbook_file)
+from .presets import PresetStore
+from .workbook import Workbook, WorkbookError, lines_for_reference, load_workbook_file
+from .xlsx_export import export_workbook
+
+NO_PRESETS = 'Пресетов нет — импортируйте xlsx'
 
 WIDE_MIN_WIDTH = 900
 
@@ -53,8 +56,10 @@ class Controller:
     def __init__(self, journal: Journal, clipboard: Callable[[str], None]):
         self.journal = journal
         self.clipboard = clipboard
+        self.presets = PresetStore(journal)
+        self.preset_id: int | None = None
         self.workbook: Workbook | None = None
-        self.file_status = 'Файл не открыт'
+        self.file_status = NO_PRESETS
         self.details: list[str] = []
         self.last_protocol: Protocol | None = None
         self.last_entry_id: int | None = None
@@ -84,36 +89,90 @@ class Controller:
         self._log('error', where=where, error=f'{type(e).__name__}: {e}',
                   traceback=''.join(traceback.format_exception(e)))
 
-    # ---------- файл ----------
+    def _preset_ref(self) -> dict | None:
+        return {'id': self.preset_id, 'name': self.workbook.name} if self.workbook else None
+
+    # ---------- пресеты ----------
     def startup(self) -> None:
         self.diagnostics = self.journal.get_setting('diagnostics') == '1'
-        last = self.journal.get_setting('last_file')
-        if not last:
+        saved = self.journal.get_setting('preset_id')
+        if saved and saved.isdigit() and self.presets.exists(int(saved)):
+            self._activate(int(saved))
             return
-        if Path(last).exists():
-            self.open_file(Path(last))
+        existing = self.presets.list()
+        if existing:
+            self._activate(existing[0].id)
+            return
+        last = self.journal.get_setting('last_file')     # база 0.1: файл → пресет
+        if last and Path(last).exists():
+            self.import_xlsx(Path(last))
         else:
-            self.file_status = 'Файл не найден — откройте файл классификатора'
+            self.file_status = NO_PRESETS
 
-    def open_file(self, path: Path) -> None:
+    def _activate(self, preset_id: int) -> None:
+        self.preset_id = preset_id
+        self.workbook = self.presets.load(preset_id)
+        self.journal.set_setting('preset_id', str(preset_id))
+        self.last_protocol, self._last_raw, self._last_shown = None, '', ''
+        self.last_entry_id = None
+        self._refresh_status()
+
+    def import_xlsx(self, path: Path, update_id: int | None = None) -> None:
+        """Новый пресет из файла или обновление пресета update_id. Файл с ошибками
+        пресеты не трогает: текущий остаётся рабочим, причины — в details."""
         path = Path(path)
         try:
             wb = load_workbook_file(path)
         except WorkbookError as e:
-            self.workbook, self.details = None, [str(e)]
-            self.file_status = f'✗ {e}'
+            self.details, self.file_status = [str(e)], f'✗ {e}'
+            self._log('import', file=path.name, status=self.file_status, details=self.details)
             return
         except Exception as e:     # непредвиденное — показать, а не упасть молча
-            self.workbook, self.details = None, [repr(e)]
-            self.file_status = f'✗ Ошибка: {e}'
-            self._log_error('open_file', e)
+            self.details, self.file_status = [repr(e)], f'✗ Ошибка: {e}'
+            self._log_error('import', e)
             return
-        self.workbook = wb
-        self.journal.set_setting('last_file', str(path))
+        if wb.problems:
+            self.details = ([f'Ошибка: {p}' for p in wb.problems] +
+                            [f'Предупреждение: {w}' for w in wb.warnings])
+            self.file_status = f'✗ ошибки в файле: {len(wb.problems)} — подробнее'
+            self._log('import', file=path.name, status=self.file_status, details=self.details)
+            return
         self.journal.snapshot(wb)
-        self._refresh_status()
-        self._log('open_file', file=wb.path.name, path=str(wb.path), sha256=wb.sha256,
+        if update_id is not None:
+            self.presets.update(update_id, wb)
+            pid = update_id
+        else:
+            pid = self.presets.create(wb)
+        self._activate(pid)
+        self._log('import', file=path.name, sha256=wb.sha256, preset=self._preset_ref(),
+                  update=update_id is not None, items=len(wb.items),
+                  references=len(wb.references), dictionary_added=len(wb.dictionary),
                   status=self.file_status, details=self.details)
+
+    def needs_export_before_update(self, preset_id: int) -> bool:
+        return any(p.id == preset_id and p.dirty for p in self.presets.list())
+
+    def export_xlsx(self, path: Path) -> str:
+        path = Path(path)
+        if self.workbook is None:
+            return 'Сначала импортируйте пресет (xlsx)'
+        try:
+            export_workbook(self.workbook, path)
+        except PermissionError:
+            return 'Файл открыт в Excel или нет прав на запись — закройте его и повторите'
+        except Exception as e:
+            self._log_error('export', e)
+            return f'✗ Ошибка: {e}'
+        self.presets.mark_exported(self.preset_id, path.name)
+        self._log('export', file=path.name, preset=self._preset_ref(),
+                  items=len(self.workbook.items), references=len(self.workbook.references),
+                  dictionary=len(self.workbook.dictionary))
+        return f'Выгружено: {path.name}'
+
+    def switch_preset(self, preset_id: int) -> None:
+        before = self._preset_ref()
+        self._activate(preset_id)
+        self._log('preset_switch', **{'from': before, 'to': self._preset_ref()})
 
     def _refresh_status(self) -> None:
         wb = self.workbook
@@ -140,13 +199,12 @@ class Controller:
                             f'⚠ эталоны {ok}/{len(results)} — подробнее')
 
     # ---------- протокол ----------
-    def generate(self, raw: str) -> GenerateResult:
+    def generate(self, raw: str, copy: bool = True) -> GenerateResult:
+        """copy=False — пересобрать без копирования (смена пресета)."""
         def fail(status):
             return GenerateResult('', status, [], '', False)
         if self.workbook is None:
-            return fail('Сначала откройте файл классификатора')
-        if self.workbook.problems:
-            return fail('Файл содержит ошибки — откройте «подробнее»')
+            return fail('Сначала импортируйте пресет (xlsx)')
         if not raw.strip():
             return fail('Введите краткую запись')
         try:
@@ -163,18 +221,21 @@ class Controller:
         self.last_protocol, self._last_raw = p, raw
         self._last_generate_at = time.monotonic()
         self.last_copy_edited = False
-        self.last_entry_id = self.journal.log_generate(raw, p, self.workbook.sha256)
-        self.clipboard(p.text)
-        self.journal.log_copy(self.last_entry_id, p.text)
+        self.last_entry_id = self.journal.log_generate(raw, p, self.workbook.sha256,
+                                                       self.preset_id)
+        if copy:
+            self.clipboard(p.text)
+            self.journal.log_copy(self.last_entry_id, p.text)
         self._last_shown = p.text
         if self.diagnostics:
             facts = extract_facts(raw)
             self._log('generate', entry_id=self.last_entry_id, raw=raw,
                       raw_norm=facts['raw_norm'], facts=facts,
                       lines=p.lines, warnings=p.warnings, defaults=p.defaults,
-                      file=self.workbook.path.name, sha256=self.workbook.sha256)
+                      preset=self._preset_ref(), sha256=self.workbook.sha256)
         defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
-        return GenerateResult(p.text, 'Скопировано в буфер', p.warnings, defaults, True)
+        status = 'Скопировано в буфер' if copy else 'Протокол пересобран (в буфер не копировался)'
+        return GenerateResult(p.text, status, p.warnings, defaults, copy)
 
     def needs_confirm_regenerate(self, current_text: str) -> bool:
         cur = current_text.strip()
@@ -208,7 +269,7 @@ class Controller:
             warnings=self.last_protocol.warnings, defaults=self.last_protocol.defaults,
             corrected=corrected_text, diff=text_diff(generated, corrected_text),
             corrected_raw=corrected_raw if kind == 'me' else None,
-            comment=comment.strip(), file=self.workbook.path.name, sha256=self.workbook.sha256)
+            comment=comment.strip(), preset=self._preset_ref(), sha256=self.workbook.sha256)
         return 'Спасибо, случай сохранён'
 
     def save_reference(self, raw: str, final_text: str) -> str:
@@ -217,20 +278,16 @@ class Controller:
             return 'Сначала сформируйте протокол'
         if raw.strip() != self._last_raw.strip():
             return 'Запись изменена — сформируйте протокол заново'
-        if not wb.path.exists():
-            return (f'Файл «{wb.path.name}» не найден — его переименовали или перенесли. '
-                    f'Откройте его заново кнопкой «Открыть файл…»')
         lines = lines_for_reference(wb, self.last_protocol, final_text)
         try:
-            case_id = append_reference(wb.path, raw.strip(), lines)
-        except FileLockedError as e:
-            return str(e)
+            case_id = self.presets.add_reference(self.preset_id, raw.strip(), lines)
         except Exception as e:
             self._log_error('save_reference', e)
             return f'✗ Ошибка: {e}'
         if self.last_entry_id is not None:
             self.journal.mark_reference(self.last_entry_id, case_id)
         self._log('save_reference', entry_id=self.last_entry_id, case_id=case_id,
-                  raw=raw.strip(), lines=lines, file=wb.path.name)
-        self.open_file(wb.path)
-        return f'Эталон {case_id} сохранён в {wb.path.name}'
+                  raw=raw.strip(), lines=lines, preset=self._preset_ref())
+        self.workbook = self.presets.load(self.preset_id)
+        self._refresh_status()
+        return f'Эталон {case_id} сохранён в пресет «{wb.name}»'

@@ -232,13 +232,6 @@ def _read_dictionary(ws) -> list[DictEntry]:
 
 
 # ---------- «Сохранить как эталон» ----------
-class FileLockedError(Exception):
-    """Файл открыт в Excel (или нет прав на запись)."""
-
-    def __init__(self):
-        super().__init__('Закройте файл в Excel и повторите')
-
-
 def _ws_key(text: str) -> str:
     return ' '.join(text.split())
 
@@ -267,36 +260,3 @@ def lines_for_reference(wb: Workbook, generated, final_text: str) -> list[tuple[
         else:
             out.append(('', line.strip()))
     return out
-
-
-def append_reference(path: Path, raw: str, lines: list[tuple[str, str]]) -> str:
-    """Дописать эталон в колонки C–F после последней занятой строки.
-    Перед записью — резервная копия <имя>.bak.xlsx. Возвращает номер эталона."""
-    import shutil
-
-    from openpyxl import load_workbook as _load
-
-    path = Path(path)
-    try:
-        xl = _load(path)
-        ws = xl.worksheets[0]
-        header = find_header_row(ws)
-        last, max_id = header, 0
-        for row in ws.iter_rows(min_row=header + 1, min_col=3, max_col=6):
-            if any(c.value is not None and str(c.value).strip() for c in row):
-                last = row[0].row
-            c = row[0].value
-            if c is not None and re.fullmatch(r'\d+(\.0)?', str(c).strip()):
-                max_id = max(max_id, int(float(c)))
-        case_id = str(max_id + 1)
-        r = last + 1
-        ws.cell(r, 3, int(case_id))
-        ws.cell(r, 4, raw)
-        for i, (code, text) in enumerate(lines, start=1):
-            ws.cell(r + i, 5, code or None)
-            ws.cell(r + i, 6, text)
-        shutil.copy2(path, path.with_name(f'{path.stem}.bak.xlsx'))
-        xl.save(path)
-    except PermissionError as e:
-        raise FileLockedError() from e
-    return case_id

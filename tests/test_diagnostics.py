@@ -21,7 +21,7 @@ def events(ctl):
 
 def test_off_by_default(make_ctl, order_xlsx):
     ctl = make_ctl()
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     ctl.generate("лигатурная")
     assert not ctl.diagnostics and not ctl.diag_dir.exists()
 
@@ -33,7 +33,7 @@ def test_diag_dir_next_to_db(make_ctl, tmp_path):
 def test_generate_event(make_ctl, order_xlsx):
     ctl = make_ctl()
     ctl.set_diagnostics(True)
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     ctl.generate("лигатурная, замена дуги верх 14x25 ss")
     ev = [e for e in events(ctl) if e["event"] == "generate"][-1]
     assert ev["raw"] == "лигатурная, замена дуги верх 14x25 ss"
@@ -41,7 +41,7 @@ def test_generate_event(make_ctl, order_xlsx):
     assert ev["facts"]["wires"]["upper"] == [["14", "25"], "SS"]
     assert ["1", "Жалобы: активация"] in ev["lines"]
     assert any("нет в классификаторе" in w for w in ev["warnings"])
-    assert ev["file"] == "order.xlsx" and len(ev["sha256"]) == 64
+    assert ev["preset"]["name"] == "order" and len(ev["sha256"]) == 64
     import orthofill
     assert ev["version"] == orthofill.__version__ and ev["ts"] and ev["entry_id"]
 
@@ -49,7 +49,7 @@ def test_generate_event(make_ctl, order_xlsx):
 def test_copy_event_has_diff(make_ctl, order_xlsx):
     ctl = make_ctl()
     ctl.set_diagnostics(True)
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     text = ctl.generate("лигатурная").text
     edited = text.replace("4 недели.", "6 недель.")
     ctl.copy(edited)
@@ -62,7 +62,7 @@ def test_copy_event_has_diff(make_ctl, order_xlsx):
 def test_copy_unchanged_is_not_edited(make_ctl, order_xlsx):
     ctl = make_ctl()
     ctl.set_diagnostics(True)
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     ctl.copy(ctl.generate("лигатурная").text)
     ev = [e for e in events(ctl) if e["event"] == "copy"][-1]
     assert ev["edited"] is False and ev["diff"] == ""
@@ -71,26 +71,41 @@ def test_copy_unchanged_is_not_edited(make_ctl, order_xlsx):
 def test_save_reference_event(make_ctl, order_xlsx):
     ctl = make_ctl()
     ctl.set_diagnostics(True)
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     text = ctl.generate("лигатурная, перепел").text
     ctl.save_reference("лигатурная, перепел", text)
     ev = [e for e in events(ctl) if e["event"] == "save_reference"][-1]
     assert ev["case_id"] == "2" and ev["raw"] == "лигатурная, перепел"
 
 
-def test_open_file_event(make_ctl, order_xlsx):
+def test_import_event(make_ctl, order_xlsx):
     ctl = make_ctl()
     ctl.set_diagnostics(True)
-    ctl.open_file(order_xlsx)
-    ev = [e for e in events(ctl) if e["event"] == "open_file"][-1]
+    ctl.import_xlsx(order_xlsx)
+    ev = [e for e in events(ctl) if e["event"] == "import"][-1]
     assert ev["file"] == "order.xlsx" and ev["status"].startswith("✓")
+    assert ev["preset"]["name"] == "order" and ev["items"] == 124 and ev["references"] == 1
+
+
+def test_export_and_switch_events(make_ctl, order_xlsx, tmp_path):
+    ctl = make_ctl()
+    ctl.set_diagnostics(True)
+    ctl.import_xlsx(order_xlsx)
+    first = ctl.preset_id
+    ctl.export_xlsx(tmp_path / "out.xlsx")
+    ctl.import_xlsx(tmp_path / "out.xlsx")
+    ctl.switch_preset(first)
+    names = [e["event"] for e in events(ctl)]
+    assert "export" in names
+    ev = [e for e in events(ctl) if e["event"] == "preset_switch"][-1]
+    assert ev["to"]["name"] == "order" and ev["from"]["name"] == "out"
 
 
 def test_error_event(make_ctl, order_xlsx, monkeypatch):
     import orthofill.controller as cmod
     ctl = make_ctl()
     ctl.set_diagnostics(True)
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
 
     def boom(*a, **k):
         raise RuntimeError("сбой")
@@ -121,7 +136,7 @@ def test_toggle_is_logged(make_ctl):
 # ---------- «Отметить ошибку» ----------
 def test_mark_case_saved_even_if_diagnostics_off(make_ctl, order_xlsx):
     ctl = make_ctl()
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     gen = ctl.generate("лигатурная, явка 6 нед").text
     fixed = gen.replace("6 недель.", "8 недель.")
     status = ctl.mark_case("program", fixed, comment="писал 6, а надо 8")
@@ -131,13 +146,13 @@ def test_mark_case_saved_even_if_diagnostics_off(make_ctl, order_xlsx):
     assert ev["raw"] == "лигатурная, явка 6 нед" and ev["generated"] == gen
     assert ev["corrected"] == fixed and "+8 недель." in ev["diff"]
     assert ev["comment"] == "писал 6, а надо 8" and ev["corrected_raw"] is None
-    assert ev["facts"]["weeks"] == 6 and ev["file"] == "order.xlsx"
+    assert ev["facts"]["weeks"] == 6 and ev["preset"]["name"] == "order"
     assert not ctl.diagnostics          # галочку не включили
 
 
 def test_mark_case_me_keeps_corrected_raw(make_ctl, order_xlsx):
     ctl = make_ctl()
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     gen = ctl.generate("лигатурная, явка 6 нед").text
     ctl.mark_case("me", gen, corrected_raw="лигатурная, явка 8 нед")
     ev = [e for e in events(ctl) if e["event"] == "case"][-1]
@@ -146,7 +161,7 @@ def test_mark_case_me_keeps_corrected_raw(make_ctl, order_xlsx):
 
 def test_mark_case_unknown_default_and_no_protocol(make_ctl, order_xlsx):
     ctl = make_ctl()
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     assert ctl.mark_case("unknown", "x") == "Сначала сформируйте протокол"
     ctl.generate("лигатурная")
     assert ctl.mark_case("unknown", "x") == "Спасибо, случай сохранён"
@@ -155,7 +170,7 @@ def test_mark_case_unknown_default_and_no_protocol(make_ctl, order_xlsx):
 
 def test_copy_edited_flag(make_ctl, order_xlsx):
     ctl = make_ctl()
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     text = ctl.generate("лигатурная").text
     ctl.copy(text)
     assert ctl.last_copy_edited is False
@@ -168,7 +183,7 @@ def test_copy_edited_flag(make_ctl, order_xlsx):
 def test_note_changed_logged(make_ctl, order_xlsx):
     ctl = make_ctl()
     ctl.set_diagnostics(True)
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     ctl.generate("лигатурная, рабочий, перепел, явка 6 нед")
     ctl.generate("лигатурная, рабочий, перепел, явка 8 нед")
     ev = [e for e in events(ctl) if e["event"] == "note_changed"][-1]
@@ -178,7 +193,7 @@ def test_note_changed_logged(make_ctl, order_xlsx):
 def test_note_changed_not_logged_for_next_patient(make_ctl, order_xlsx):
     ctl = make_ctl()
     ctl.set_diagnostics(True)
-    ctl.open_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
     ctl.generate("лигатурная, рабочий, перепел, явка 6 нед")
     ctl.generate("самолигирующая, детализация, замена дуги низ 19x25 ss")
     assert not [e for e in events(ctl) if e["event"] == "note_changed"]
