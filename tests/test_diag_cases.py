@@ -157,3 +157,9 @@ def test_wire_without_arch_is_reported(wb):
     assert any("обеих" in d for d in p.defaults)
     p = build_protocol(wb, "самолигируемая, замена дуги верх 18 * 25 TMA")
     assert not any("обеих" in d for d in p.defaults)
+
+
+def test_self_ligating_with_ligatures_controls_clips(wb):
+    """Врач, 21.10: самолигирующая + лигатуры на нижней → «…закрытия клипс»."""
+    p = build_protocol(wb, "активация, самолигируемая, лигатуры на нижней")
+    assert "4h2" in ids(p) and "4h1" not in ids(p)
