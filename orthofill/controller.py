@@ -1,7 +1,7 @@
 """Логика окна без tkinter — чтобы её можно было проверить тестами."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -45,6 +45,7 @@ class GenerateResult:
     warnings: list[str]
     defaults_line: str
     copied: bool
+    rows: list = field(default_factory=list)     # render.Row — для вида в окне
 
 
 def _fmt_line(line: tuple[str, str]) -> str:
@@ -243,7 +244,7 @@ class Controller:
                       preset=self._preset_ref(), sha256=self.workbook.sha256)
         defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
         status = 'Скопировано в буфер' if copy else 'Протокол пересобран (в буфер не копировался)'
-        return GenerateResult(p.text, status, p.warnings, defaults, copy)
+        return GenerateResult(p.text, status, p.warnings, defaults, copy, p.rows)
 
     def needs_confirm_regenerate(self, current_text: str) -> bool:
         cur = current_text.strip()

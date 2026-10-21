@@ -168,6 +168,13 @@ class App:
         f, self.out_txt = self._text(self.out_panel, 6)
         f.pack(fill='both', expand=True)
         self.out_frame = f
+        # вид протокола: разделы жирные с отступом; «проверьте» — полоса на полях
+        bold = tkfont.Font(font=self.f_text)
+        bold.configure(weight='bold')
+        self.out_txt.tag_configure('section', font=bold, spacing1=8)
+        self.out_txt.tag_configure('first', spacing1=0)
+        self.out_txt.tag_configure('check', lmargin1=10, lmargin2=10, lmargincolor=WARN_TEXT)
+        self.out_txt.bind('<KeyRelease>', self._unmark_edited, add='+')
 
         # Строка статуса
         st = ttk.Frame(r, padding=(12, 4, 12, 8))
@@ -197,6 +204,8 @@ class App:
         if mode == self.mode:
             return
         self.mode = mode
+        if hasattr(self, 'warn_lbl'):
+            self._show_marks()
         for p in (self.in_panel, self.out_panel):
             p.grid_forget()
         self.bar_left.pack_forget()
@@ -278,8 +287,56 @@ class App:
         self.root.clipboard_append(text)
         self.root.update()
 
+    def _show_protocol(self, rows):
+        """Текст протокола с тегами; прежние теги снимаются полностью."""
+        t = self.out_txt
+        t.delete('1.0', 'end')
+        for tag in ('section', 'first', 'check'):
+            t.tag_remove(tag, '1.0', 'end')
+        for i, row in enumerate(rows):
+            tags = []
+            if row.section:
+                tags.append('section')
+                if i == 0:
+                    tags.append('first')
+            if row.check:
+                tags.append('check')
+            t.insert('end', row.text + ('\n' if i < len(rows) - 1 else ''), tuple(tags))
+        t.edit_reset()
+        t.edit_modified(False)
+
+    def _unmark_edited(self, e):
+        """Врач поправил помеченную строку — пометка снимается."""
+        if e.keysym in ('Up', 'Down', 'Left', 'Right', 'Home', 'End', 'Prior', 'Next',
+                        'Shift_L', 'Shift_R', 'Control_L', 'Control_R', 'Alt_L', 'Alt_R'):
+            return
+        t = self.out_txt
+        if 'check' in t.tag_names('insert linestart'):
+            t.tag_remove('check', 'insert linestart', 'insert lineend+1c')
+
+    @staticmethod
+    def _marks_text(rows, warnings, limit: int = 8) -> str:
+        """Причины пометок — «! строка… — причина»; прочие предупреждения — «⚠ …».
+        Не больше limit строк: в узком окне список иначе съедает протокол."""
+        out, used = [], set()
+        for row in rows:
+            for reason in row.check:
+                short = row.text if len(row.text) <= 40 else row.text[:40] + '…'
+                out.append(f'! {short} — {reason}')
+                used.add(reason)
+        out += [f'⚠ {w}' for w in warnings if w not in used]
+        if len(out) > limit:
+            rest = len(out) - (limit - 1)
+            out = out[:limit - 1] + [f'… и ещё {rest} — строки с оранжевой полосой в протоколе']
+        return '\n'.join(out)
+
+    def _show_marks(self):
+        rows, warnings = getattr(self, '_last_marks', ([], []))
+        self.warn_lbl.configure(text=self._marks_text(
+            rows, warnings, limit=3 if self.mode == 'narrow' else 8))
+
     def _status(self, text: str, warnings=(), defaults_line: str = '', ask_mark=False,
-                undo=False):
+                undo=False, rows=()):
         self.status_lbl.configure(text=text)
         if undo:
             self.undo_btn.pack(side='left', padx=(12, 0))
@@ -289,7 +346,8 @@ class App:
             self.mark_prompt.pack(side='left', padx=(12, 0))
         else:
             self.mark_prompt.pack_forget()
-        self.warn_lbl.configure(text='\n'.join(f'⚠ {w}' for w in warnings))
+        self._last_marks = (list(rows), list(warnings))
+        self._show_marks()
         self.def_lbl.configure(text=defaults_line)
 
     def _show_file_status(self):
@@ -423,10 +481,8 @@ class App:
         """Пересобрать без копирования — буфер при смене пресета не меняется."""
         r = self.ctl.generate(raw, copy=False)
         if r.text:
-            self.out_txt.delete('1.0', 'end')
-            self.out_txt.insert('1.0', r.text)
-            self.out_txt.edit_reset()
-            self._status(status, r.warnings, r.defaults_line, undo=undo)
+            self._show_protocol(r.rows)
+            self._status(status, r.warnings, r.defaults_line, undo=undo, rows=r.rows)
         else:
             self._status(r.status)
 
@@ -456,10 +512,8 @@ class App:
             return
         r = self.ctl.generate(self.raw_txt.get('1.0', 'end-1c'))
         if r.copied:
-            self.out_txt.delete('1.0', 'end')
-            self.out_txt.insert('1.0', r.text)
-            self.out_txt.edit_reset()
-        self._status(r.status, r.warnings, r.defaults_line)
+            self._show_protocol(r.rows)
+        self._status(r.status, r.warnings, r.defaults_line, rows=r.rows)
 
     def copy(self):
         text = self.out_txt.get('1.0', 'end-1c').strip()

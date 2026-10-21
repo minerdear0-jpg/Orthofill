@@ -37,3 +37,67 @@ def test_switch_says_clipboard_is_old(app):
     app.switch_to(first)
     status = app.status_lbl["text"]
     assert "в буфере прежний" in status and "Копировать" in status
+
+
+# ---------- 0.2 beta 2: вид протокола ----------
+def _gen(app, raw):
+    app.raw_txt.delete("1.0", "end")
+    app.raw_txt.insert("1.0", raw)
+    app.out_txt.delete("1.0", "end")
+    app.generate()
+
+
+def _marked(t):
+    r = t.tag_ranges("check")
+    return [t.get(r[i], r[i + 1]) for i in range(0, len(r), 2)]
+
+
+def test_sections_bold_and_marks(app):
+    _gen(app, "лигатурная, по молярам 1, явка 5 нед")
+    t = app.out_txt
+    assert "section" in t.tag_names("1.0")
+    assert any("Соотношение моляров" in m for m in _marked(t))
+    assert "!" in app.warn_lbl["text"]
+
+
+def test_edit_removes_mark(app):
+    _gen(app, "лигатурная, по молярам 1")
+    t = app.out_txt
+    first = t.index(t.tag_ranges("check")[0])
+    t.mark_set("insert", f"{first} lineend")
+    t.insert("insert", " (проверено)")
+    app.root.update()
+    t.focus_force()
+    t.event_generate("<KeyRelease>", keysym="space", when="now")
+    assert "check" not in t.tag_names(f"{first} linestart")
+
+
+def test_copy_has_no_marks(app):
+    _gen(app, "лигатурная, по молярам 1")
+    clip = app.root.clipboard_get()
+    assert clip == app.ctl.last_protocol.text and "!" not in clip
+
+
+def test_regenerate_resets_tags(app):
+    _gen(app, "лигатурная, по молярам 1")
+    _gen(app, "лигатурная, явка 6 нед")
+    assert not app.out_txt.tag_ranges("check")
+    assert len(app.out_txt.tag_ranges("section")) == 2 * 5
+
+
+def test_narrow_marks_list_is_capped(app):
+    """Смоук 0.2b2: в узком окне 6 причин съедали всю высоту — поле протокола исчезало."""
+    app._relayout("narrow")
+    _gen(app, "активация, самолигируемая, класс 1 по молярам, цепочка на верхней, "
+              "замена дуги 18х25 тма, перепел, явка 5 нед")
+    lines = app.warn_lbl["text"].splitlines()
+    assert len(lines) <= 4 and "ещё" in lines[-1]
+
+
+def test_marks_list_recapped_on_resize(app):
+    app._relayout("wide")
+    _gen(app, "активация, самолигируемая, класс 1 по молярам, цепочка на верхней, "
+              "замена дуги 18х25 тма, перепел, явка 5 нед")
+    assert len(app.warn_lbl["text"].splitlines()) > 4
+    app._relayout("narrow")
+    assert len(app.warn_lbl["text"].splitlines()) <= 4
