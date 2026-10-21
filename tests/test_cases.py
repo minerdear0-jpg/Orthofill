@@ -1,5 +1,7 @@
 """Регрессионные случаи — данными (tests/cases/*.json), чтобы их могла прогнать
-и будущая реализация на другом языке. Формат — см. любой файл в tests/cases."""
+и будущая реализация на другом языке. Формат — см. любой файл в tests/cases;
+необязательные поля файла: extra_rows (пункты пресета), dictionary ([слово,
+текст пункта]); случая: codes_in/codes_not_in, warnings_*, defaults_*, unknown."""
 import json
 import shutil
 
@@ -7,7 +9,7 @@ import pytest
 
 from conftest import ROOT, _insert_rows
 from orthofill.engine import build_protocol
-from orthofill.workbook import load_workbook_file
+from orthofill.workbook import DictEntry, load_workbook_file
 
 CASE_FILES = sorted((ROOT / "tests" / "cases").glob("*.json"))
 
@@ -24,13 +26,16 @@ def presets(tmp_path_factory):
     cache = {}
 
     def get(data):
-        key = (data["preset_xlsx"], json.dumps(data.get("extra_rows", [])))
+        key = (data["preset_xlsx"], json.dumps(data.get("extra_rows", [])),
+               json.dumps(data.get("dictionary", [])))
         if key not in cache:
             dst = tmp_path_factory.mktemp("case") / "preset.xlsx"
             shutil.copy(ROOT / data["preset_xlsx"], dst)
             if data.get("extra_rows"):
                 _insert_rows(dst, [tuple(r) for r in data["extra_rows"]])
-            cache[key] = load_workbook_file(dst)
+            wb = load_workbook_file(dst)
+            wb.dictionary = [DictEntry(w, t, "") for w, t in data.get("dictionary", [])]
+            cache[key] = wb
         return cache[key]
     return get
 

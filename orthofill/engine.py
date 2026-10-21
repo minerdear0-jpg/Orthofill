@@ -47,6 +47,7 @@ class Protocol:
     warnings: list[str] = field(default_factory=list)
     defaults: list[str] = field(default_factory=list)
     rows: list[Row] = field(default_factory=list)
+    dictionary_hits: list[str] = field(default_factory=list)   # сработавшие слова врача
 
     @property
     def text(self) -> str:
@@ -169,6 +170,10 @@ class _Ctx:
         # «проверьте»: код группы/раздела → причины; current — группа, которую выбираем
         self.flags: dict[str, list[str]] = {}
         self.current: str | None = None
+        # словарь врача: группа → выбранный словом вариант; отдельные пункты по слову
+        self.forced: dict[str, Item] = {}
+        self.forced_singles: set[str] = set()
+        self.dictionary_hits: list[str] = []
 
     def flag(self, code: str, reason: str):
         reasons = self.flags.setdefault(code, [])
@@ -460,15 +465,54 @@ def _select_complaint(section: Item, ctx: _Ctx) -> Item | None:
     return default
 
 
+def _negated_at(n: str, start: int, end: int) -> bool:
+    """Фраза записи вокруг [start, end) отменяет назначение («без …», «… отменён»)."""
+    left = max(0, max(n.rfind(c, 0, start) for c in ',.;') + 1)
+    ends = [p for p in (n.find(c, end) for c in ',.;') if p != -1]
+    part = n[left:min(ends) if ends else len(n)]
+    return re.search(r'отмен|\bсня[лт]|\bбез\b|\bне\s+(?:носит|назнач)', part) is not None
+
+
 def _cancelled(n: str, stem_rx: str) -> bool:
     """Назначение отменено: «перепел отменен», «без эластиков», «сняли резинки»."""
-    for m in re.finditer(stem_rx, n):
-        start = max(0, max(n.rfind(c, 0, m.start()) for c in ',.;') + 1)
-        ends = [p for p in (n.find(c, m.end()) for c in ',.;') if p != -1]
-        part = n[start:min(ends) if ends else len(n)]
-        if re.search(r'отмен|\bсня[лт]|\bбез\b|\bне\s+(?:носит|назнач)', part):
-            return True
-    return False
+    return any(_negated_at(n, m.start(), m.end()) for m in re.finditer(stem_rx, n))
+
+
+def _phrase_rx(phrase: str) -> str:
+    """Слова врача → шаблон: слова по основам, сечение «18х25» — с любым знаком."""
+    parts = []
+    for w in norm(phrase).split():
+        if re.search(r'\d', w):
+            parts.append(r'[xх×*/\-]'.join(re.escape(x) for x in re.split(r'[xх×*/\-]', w)))
+        else:
+            parts.append(re.escape(word_stem(w)) + r'[^\s,.;:]*')
+    return r'(?<![а-яa-z0-9])' + r'[\s,.;:]+'.join(parts)
+
+
+def _apply_dictionary(wb: Workbook, ctx: _Ctx) -> None:
+    """Слова врача — раньше правил: вариант своей группы или отдельный пункт."""
+    by_text: dict[str, Item] = {}
+    for it in wb.items:
+        by_text.setdefault(' '.join(it.text.split()), it)
+    found: dict[str, int] = {}
+    for e in wb.dictionary:
+        m = next((m for m in re.finditer(_phrase_rx(e.word), ctx.n)
+                  if not _negated_at(ctx.n, m.start(), m.end())), None)
+        if m is None:
+            continue
+        it = by_text.get(' '.join(e.item_text.split()))
+        if it is None:
+            ctx.warn(f'слово «{e.word}» больше не находит пункт')
+            continue
+        ctx.dictionary_hits.append(e.word)
+        group = wb.by_id.get(it.parent) if it.level == 3 and not it.orphan else None
+        if group is not None:
+            if group.id in ctx.forced and found[group.id] <= m.start():
+                ctx.warn(f'«{group.text.strip()}»: несколько слов врача — взято первое по записи')
+                continue
+            ctx.forced[group.id], found[group.id] = it, m.start()
+        else:
+            ctx.forced_singles.add(it.id)
 
 
 def _orphan_applies(item: Item, ctx: _Ctx) -> bool:
@@ -491,7 +535,9 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
     if ctx.f['wire_no_arch']:
         ctx.default('дуга на обеих челюстях (челюсть не указана)')
     when = _effective_when(wb)
-    singles = {it.id: (when[it.id] == 'always' or _single_mentioned(it, ctx))
+    _apply_dictionary(wb, ctx)
+    singles = {it.id: (when[it.id] == 'always' or it.id in ctx.forced_singles
+                       or _single_mentioned(it, ctx))
                for s in wb.sections for it in s.children
                if not it.children and not it.orphan}
     ctx.mentioned_singles = [wb.by_id[i] for i, ok in singles.items()
@@ -522,12 +568,15 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
             lines += [(section.id, section.text)] + out
     if ctx.f['wire_hint'] and not ctx.f['wires']:
         ctx.warn('дуга: упоминание не распознано — проверьте вручную')
-    return Protocol(lines, ctx.warnings, ctx.defaults, render_rows(wb, lines, ctx.flags))
+    return Protocol(lines, ctx.warnings, ctx.defaults, render_rows(wb, lines, ctx.flags),
+                    ctx.dictionary_hits)
 
 
 def _select_or_default(group: Item, ctx: _Ctx):
     """Выбор правилом; если врач не написал (правило ничего не выбрало или
     подставило своё «по умолчанию») — вариант по умолчанию из пресета."""
+    if group.id in ctx.forced:          # слово врача — без правила и без «проверьте»
+        return ctx.forced[group.id]
     n_def, n_warn = len(ctx.defaults), len(ctx.warnings)
     ctx.current = group.id
     try:
