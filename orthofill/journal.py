@@ -1,5 +1,5 @@
-"""Память программы (SQLite): журнал записей и протоколов, снимки
-классификатора, настройки. xlsx врача остаётся источником правды."""
+"""Память программы (SQLite): журнал записей и протоколов, пресеты (см.
+presets.py и docs/presets-schema.md), снимки классификатора, настройки."""
 from __future__ import annotations
 
 import json
@@ -21,8 +21,36 @@ CREATE TABLE IF NOT EXISTS entries (
     warnings_json TEXT, defaults_json TEXT, sha256 TEXT,
     copied_text TEXT, copied_at TEXT, reference_case_id TEXT);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
-PRAGMA user_version = 1;
 """
+
+# Версия 2 (0.2): пресеты. Описание — docs/presets-schema.md
+_SCHEMA_V2 = """
+CREATE TABLE IF NOT EXISTS presets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL,
+    source TEXT, source_sha256 TEXT, imported_at TEXT, created_at TEXT,
+    dirty INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS preset_items (
+    preset_id INTEGER NOT NULL, pos INTEGER NOT NULL, code TEXT NOT NULL, text TEXT NOT NULL,
+    level INTEGER NOT NULL, parent TEXT, orphan INTEGER NOT NULL DEFAULT 0,
+    method TEXT, when_ TEXT, default_code TEXT, words_json TEXT,
+    PRIMARY KEY (preset_id, code));
+CREATE TABLE IF NOT EXISTS reference_cases (
+    preset_id INTEGER NOT NULL, pos INTEGER NOT NULL, case_id TEXT NOT NULL, raw TEXT,
+    PRIMARY KEY (preset_id, case_id));
+CREATE TABLE IF NOT EXISTS reference_lines (
+    preset_id INTEGER NOT NULL, case_id TEXT NOT NULL, pos INTEGER NOT NULL,
+    code TEXT, text TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS dictionary (
+    preset_id INTEGER NOT NULL, word TEXT NOT NULL, item_text TEXT NOT NULL, code TEXT,
+    added TEXT, hits INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (preset_id, word));
+CREATE TABLE IF NOT EXISTS imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, preset_id INTEGER, at TEXT, file_name TEXT,
+    sha256 TEXT, items INTEGER, references_ INTEGER);
+CREATE TABLE IF NOT EXISTS exports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, preset_id INTEGER, at TEXT, file_name TEXT);
+"""
+SCHEMA_VERSION = 2
 
 
 def _now() -> str:
@@ -59,6 +87,18 @@ class Journal:
         self.db_path = Path(db_path)
         self._db = sqlite3.connect(self.db_path)
         self._db.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """База 0.1 (версия 1) → 2: пресеты; журнал и настройки не трогаются."""
+        if self._db.execute('PRAGMA user_version').fetchone()[0] >= SCHEMA_VERSION:
+            return
+        with self._db:
+            cols = {r[1] for r in self._db.execute('PRAGMA table_info(entries)')}
+            if 'preset_id' not in cols:
+                self._db.execute('ALTER TABLE entries ADD COLUMN preset_id INTEGER')
+            self._db.executescript(_SCHEMA_V2)
+            self._db.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
 
     def _exec(self, sql: str, args=()) -> sqlite3.Cursor:
         with self._db:
@@ -72,12 +112,12 @@ class Journal:
         self._exec('INSERT OR IGNORE INTO classifier_snapshots VALUES (?,?,?,?)',
                    (wb.sha256, wb.path.name, _now(), content))
 
-    def log_generate(self, raw: str, protocol, sha256: str) -> int:
+    def log_generate(self, raw: str, protocol, sha256: str, preset_id: int | None = None) -> int:
         cur = self._exec(
-            'INSERT INTO entries (created_at, raw, generated, warnings_json, defaults_json, sha256)'
-            ' VALUES (?,?,?,?,?,?)',
+            'INSERT INTO entries (created_at, raw, generated, warnings_json, defaults_json, sha256,'
+            ' preset_id) VALUES (?,?,?,?,?,?,?)',
             (_now(), raw, protocol.text, json.dumps(protocol.warnings, ensure_ascii=False),
-             json.dumps(protocol.defaults, ensure_ascii=False), sha256))
+             json.dumps(protocol.defaults, ensure_ascii=False), sha256, preset_id))
         return cur.lastrowid
 
     def log_copy(self, entry_id: int, text: str) -> None:

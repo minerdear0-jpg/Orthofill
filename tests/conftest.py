@@ -43,3 +43,10 @@ def order_xlsx_with(order_xlsx):
         _insert_rows(order_xlsx, rows)
         return load_workbook_file(order_xlsx)
     return make
+
+
+@pytest.fixture
+def store(tmp_path):
+    from orthofill.journal import Journal
+    from orthofill.presets import PresetStore
+    return PresetStore(Journal(tmp_path / "j.db"))
