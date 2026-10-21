@@ -30,11 +30,13 @@ Step 'Версия и код сборки'
 # имя файлов — из версии программы: «0.1 beta 2» → 0.1beta2
 $Version = (uv run python -c "import orthofill; print(orthofill.VERSION_LABEL.replace(' ', ''))").Trim()
 Check 'Чтение версии'
-$sha = 'nogit'
-if (Get-Command git -ErrorAction SilentlyContinue) {
-    $sha = (git rev-parse --short HEAD).Trim()
-    if (git status --porcelain --untracked-files=no) { $sha = "$sha+изм" }
-}
+# код коммита: через git, а если git не установлен — из папки .git
+Remove-Item orthofill\_build.py -ErrorAction SilentlyContinue
+# через файл в UTF-8: вывод в консоль испортил бы русское «+изм»
+$shaFile = Join-Path $env:TEMP 'orthofill_build_id.txt'
+uv run python -c "from orthofill.buildinfo import build_id; open(r'$shaFile', 'w', encoding='utf-8').write(build_id())"
+Check 'Чтение кода сборки'
+$sha = [IO.File]::ReadAllText($shaFile, [Text.Encoding]::UTF8).Trim()
 $build = "$sha · $(Get-Date -Format 'yyyy-MM-dd')"
 # код сборки зашивается в exe — виден в заголовке окна
 [IO.File]::WriteAllText("$PSScriptRoot\orthofill\_build.py", "BUILD = '$build'`n", (New-Object Text.UTF8Encoding $false))
