@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
+from .buildinfo import build_id
 
 
 class DiagLog:
@@ -20,6 +21,7 @@ class DiagLog:
     def write(self, event: str, **data) -> None:
         now = datetime.now()
         record = {'ts': now.isoformat(timespec='seconds'), 'version': __version__,
+                  'build': build_id(),
                   'event': event, **data}
         try:
             self.folder.mkdir(parents=True, exist_ok=True)

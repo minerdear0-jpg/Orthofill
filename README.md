@@ -1,4 +1,4 @@
-# Orthofill 0.1 beta
+# Orthofill 0.1 beta 2
 
 Краткая запись ортодонта → полный протокол приёма по классификатору клиники →
 буфер обмена → вставка в служебное ПО.
@@ -7,7 +7,7 @@
 
 ## Запуск
 
-1. Распакуйте `Orthofill-0.1beta-portable.zip` в любую папку (например, `D:\Orthofill`).
+1. Распакуйте `Orthofill-<версия>-portable.zip` (например, `Orthofill-0.1beta2-portable.zip`) в любую папку (например, `D:\Orthofill`).
 2. Запустите `Orthofill\Orthofill.exe`. Установка не нужна.
 3. При первом запуске нажмите **«Открыть файл…»** и выберите файл классификатора
    (в папке лежит пример `order.xlsx`). Программа запомнит файл.
@@ -122,8 +122,11 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 
 Скрипт сам поставит `uv`, Python и библиотеки, прогонит тесты и соберёт:
 
-- `dist\Orthofill-0.1beta-portable.zip` — портативная версия (основная);
-- `dist\Orthofill-0.1beta.exe` — exe одним файлом.
+- `dist\Orthofill-<версия>-portable.zip` — портативная версия (основная);
+- `dist\Orthofill-<версия>.exe` — exe одним файлом.
+
+Версия и код сборки видны в заголовке окна: «Orthofill 0.1 beta 2 · сборка 4c1de53 · 2026-10-21».
+Код сборки — это коммит git, из которого собрана программа.
 
 Разработка: `uv run pytest` — тесты, `uv run python -m orthofill` — запуск,
 `uv run python -m orthofill --test order.xlsx` — сверка с эталонами в консоли.

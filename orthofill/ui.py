@@ -11,6 +11,12 @@ from .controller import CASE_KINDS, Controller, layout_mode
 from .journal import DB_NAME, Journal, data_dir
 
 TITLE = f'Orthofill {VERSION_LABEL}'
+
+
+def window_title() -> str:
+    """Версия и код сборки — сразу видно, какой код запущен."""
+    from .buildinfo import build_id
+    return f'{TITLE} · сборка {build_id()}'
 REMINDER = 'Проверьте протокол перед вставкой в служебное ПО'
 DISCLAIMER = 'Программа формирует черновик протокола; ответственность за содержание несёт врач.'
 
@@ -77,7 +83,7 @@ class App:
 
     def _build(self):
         r = self.root
-        r.title(TITLE)
+        r.title(window_title())
         r.minsize(420, 520)
 
         # Шапка
@@ -335,7 +341,7 @@ class App:
 
     def about(self):
         wb = self.ctl.workbook
-        messagebox.showinfo(TITLE, f'{TITLE}\n\n{DISCLAIMER}\n\n'
+        messagebox.showinfo(TITLE, f'{window_title()}\n\n{DISCLAIMER}\n\n'
                                    f'Файл классификатора:\n{wb.path if wb else "не открыт"}\n\n'
                                    f'Журнал:\n{self.ctl.journal.db_path}\n\n'
                                    f'Диагностика ({"включена" if self.ctl.diagnostics else "выключена"}):\n'

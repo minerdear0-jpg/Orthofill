@@ -10,3 +10,4 @@ __pycache__/
 *.spec
 diagnostics/
 orthofill-errors.log
+orthofill/_build.py

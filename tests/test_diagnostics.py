@@ -42,7 +42,8 @@ def test_generate_event(make_ctl, order_xlsx):
     assert ["1", "Жалобы: активация"] in ev["lines"]
     assert any("нет в классификаторе" in w for w in ev["warnings"])
     assert ev["file"] == "order.xlsx" and len(ev["sha256"]) == 64
-    assert ev["version"] == "0.1.0b1" and ev["ts"] and ev["entry_id"]
+    import orthofill
+    assert ev["version"] == orthofill.__version__ and ev["ts"] and ev["entry_id"]
 
 
 def test_copy_event_has_diff(make_ctl, order_xlsx):
