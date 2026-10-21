@@ -32,6 +32,18 @@ def main(argv=None) -> int:
         if stream is not None and hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8')
 
+    if args.raw and not args.xlsx:
+        ap.error('--raw требует --xlsx')
+
+    from orthofill.workbook import WorkbookError
+    try:
+        return _run(args)
+    except (WorkbookError, OSError) as e:      # не тот файл — без трассировки
+        print(f'[ОШИБКА] {e}')
+        return 2
+
+
+def _run(args) -> int:
     from orthofill.engine import build_protocol, check_references, rule_warnings
     from orthofill.workbook import load_workbook_file
 
@@ -56,8 +68,6 @@ def main(argv=None) -> int:
                 print(f'    лишнее:           {code} {text[:80]}')
         return 1 if failed else 0
 
-    if not args.xlsx:
-        ap.error('--raw требует --xlsx')
     p = build_protocol(load_workbook_file(args.xlsx), args.raw)
     print(p.text)
     for w in p.warnings:

@@ -189,3 +189,24 @@ def test_generate_unexpected_error_is_shown(ctl, clip, order_xlsx, monkeypatch):
     monkeypatch.setattr(cmod, "build_protocol", boom)
     r = ctl.generate("лигатурная")
     assert r.status == "✗ Ошибка: сбой" and not r.copied and clip == []
+
+
+def test_save_reference_file_renamed(ctl, order_xlsx):
+    """Диагностика 21.10: файл переименовали, пока программа была открыта."""
+    ctl.open_file(order_xlsx)
+    text = ctl.generate("лигатурная").text
+    order_xlsx.rename(order_xlsx.with_name("order-new-aktiv.xlsx"))
+    msg = ctl.save_reference("лигатурная", text)
+    assert "не найден" in msg and "Открыть файл" in msg
+
+
+def test_cli_check_bad_file_is_friendly(tmp_path):
+    import openpyxl
+    import subprocess
+    import sys
+    p = tmp_path / "kons.xlsx"
+    openpyxl.Workbook().save(p)
+    r = subprocess.run([sys.executable, "-m", "orthofill", "--check", str(p)],
+                       capture_output=True, encoding="utf-8", cwd=ROOT)
+    assert r.returncode == 2 and "Traceback" not in r.stderr
+    assert "ID_CLASS" in r.stdout + r.stderr

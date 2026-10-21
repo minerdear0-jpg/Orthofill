@@ -1,6 +1,6 @@
 [project]
 name = "orthofill"
-version = "0.1.0b2"
+version = "0.1.0b3"
 description = "Краткая запись ортодонта → протокол приёма по классификатору"
 requires-python = ">=3.12"
 dependencies = [

@@ -6,7 +6,7 @@ from .text import norm
 
 
 def parse_system_type(n):
-    if 'самолигир' in n:
+    if 'самол' in n:              # и с опечатками: «самолинируемая», «самолиг»
         return 'self_ligating'
     if 'лигатур' in n:
         return 'ligature'
@@ -107,7 +107,7 @@ def detect_size(text):
 # Пункт записи про другое действие — не часть фразы о дуге
 _WIRE_STOP = (r'лигатур|подвяз|эластик|явк|изгиб|юстир|гигиен|слизист|эрози|брекет|'
               r'отклеи|выход|перелом|динамик|класс|моляр|клык|этап|зуб|переклей|'
-              r'пружин|недел')
+              r'пружин|недел|цепочк|тяг|винт')
 # Слово про другое действие — отдельный «пункт», обрывающий фразу о дуге
 # (работает и в записи без запятых: «лигатурная дуга верх 16х25 нити явка 4 нед»)
 _SPLIT = re.compile(r'[;\n]|[.,](?!\d)|(\S*(?:' + _WIRE_STOP + r')\S*)')
@@ -122,7 +122,22 @@ def _wire_items(n):
     """Текст про дуги: непрерывная цепочка пунктов, где есть «дуг», размер,
     материал или челюсть. Слова про лигатуры, эластики, явку и т.п. цепочку
     обрывают. Цепочка засчитывается, если в ней есть «дуг» или явная дуга."""
-    items = [p.strip() for p in _SPLIT.split(n) if p is not None]
+    # Челюсть сразу за словом другого пункта относится к нему, а не к дуге:
+    # «лигатуры на нижней», «цепочка на обеих челюстях»
+    items, after_stop = [], False
+    for k, p in enumerate(_SPLIT.split(n)):
+        if p is None:                      # разделитель-знак
+            after_stop = False
+            continue
+        p = p.strip()
+        if k % 2:                          # слово-стоп (группа в _SPLIT)
+            items.append(p)
+            after_stop = True
+            continue
+        if after_stop and p and not ('дуг' in p or detect_size(p) or detect_material(p)):
+            p = ''                         # только челюсть — хвост пункта-стопа
+        after_stop = False
+        items.append(p)
     runs, cur, ok = [], [], False
     for it in items + ['']:
         wireish = bool(it) and not re.search(_WIRE_STOP, it) and (
@@ -192,6 +207,10 @@ def parse_wire_from_raw(n):
         result = {a: (s, m or mat) for a, (s, m) in result.items()}
     return result
 
+def wire_no_arch(n):
+    """Дуга названа без челюсти («замена дуги 18х25 тма») — ставится на обе."""
+    return any(not arch_marks(r) and _spec(r) not in (None, 'skip') for r in _wire_items(n))
+
 def parse_wire_from_label(label):
     n = norm(label)
     arch = 'upper' if 'верхн' in n else 'lower' if 'нижн' in n else None
@@ -251,11 +270,19 @@ def parse_dynamics(n):
 def parse_ligature_change(n, st):
     if re.search(r'(смен|замен)\w*\s+[^.;]*лигатур|лигатур\w*\s+(смен|замен)', n):
         return True
+    # «лигатуры на нижней» на самолигирующей — тоже смена лигатур;
+    # «система лигатур(ная)» — это тип системы
+    if re.search(r'(?<![а-я])лигатур(?!н)', _without_system(n)):
+        return True
     return st == 'ligature'
+
+def _without_system(n):
+    """Запись без «система лигатур(ная)» — это тип системы, а не лигатуры."""
+    return re.sub(r'систем\w*\s+(?:вестибулярн\w*\s+)?лигатур\w*', '', n)
 
 def parse_ligature_arches(n):
     """Челюсть — только во фрагменте про лигатуры (не «дуга на верху»)."""
-    return arches_in(clause(n, r'лигатур(?!н)', stops='.;,'))
+    return arches_in(clause(_without_system(n), r'лигатур(?!н)', stops='.;,'))
 
 def parse_binding_arches(n):
     return arches_in(clause(n, r'подвяз', stops='.;,'))
@@ -263,7 +290,8 @@ def parse_binding_arches(n):
 def parse_wire_adjustments(n):
     out = []
     for order, stem in ((1, 'перв'), (2, 'втор'), (3, 'трет')):
-        if re.search(rf'изгиб\w*\s+{stem}|{stem}\w*\s+порядк', n):
+        if re.search(rf'изгиб\w*\s+{stem}|{stem}\w*\s+порядк', n) or \
+                (order == 3 and re.search(r'торк', n)):       # торк — изгиб 3 порядка
             out.append(order)
     return out
 
@@ -286,13 +314,21 @@ def extract_facts(raw: str) -> dict:
         'binding': 'подвяз' in n,
         'binding_arches': parse_binding_arches(n),
         'wire_adjustments': parse_wire_adjustments(n),
-        'mentions_elastics': re.search(r'эластик|резин|тяг', n) is not None,
+        'mentions_elastics': _mentions_elastics(n),
         'mentions_visit': 'явк' in n,
         'complaint_text': _complaint_text(n),
         'classes_sided': re.search(r'(?:моляр|клык)[^.;]*?(?:справа|слева)|'
                                    r'(?:справа|слева)[^.;]*?(?:моляр|клык)', n) is not None,
         'wire_hint': wire_hint(n),
+        'wire_no_arch': wire_no_arch(n),
     }
+
+def _mentions_elastics(n):
+    """«тяга к минивинту» — не эластики."""
+    if re.search(r'эластик|резин', n):
+        return True
+    return any('винт' not in clause(n[m.start():], r'тяг', stops='.;,')
+               for m in re.finditer(r'тяг', n))
 
 def _complaint_text(n):
     """Что врач написал после «жалобы» (без «жалоб нет/не предъявляет»)."""

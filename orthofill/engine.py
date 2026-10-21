@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .parse import extract_facts, parse_wire_from_label
+from .parse import arches_in, extract_facts, parse_wire_from_label
 from .text import norm, stem_in, word_stem
 from .workbook import Item, ReferenceCase, Workbook
 
@@ -64,8 +64,13 @@ def rule_kind(group: Item) -> str | None:
 
 
 def _arch_of(group: Item) -> str | None:
+    """Челюсть группы — из её текста, а если там не сказано («Смена дуги»),
+    то из вариантов, когда все они про одну челюсть."""
     n = norm(group.text)
-    return 'upper' if 'верхн' in n else 'lower' if 'нижн' in n else None
+    if 'верхн' in n or 'нижн' in n:
+        return 'upper' if 'верхн' in n else 'lower'
+    found = {_arch_of(c) for c in group.children}
+    return found.pop() if len(found) == 1 else None
 
 
 def rule_warnings(wb: Workbook) -> list[str]:
@@ -112,11 +117,14 @@ def _first_number(text: str) -> int | None:
 
 
 class _Ctx:
-    def __init__(self, raw: str):
+    def __init__(self, raw: str, wb: Workbook | None = None):
         self.f = extract_facts(raw)
         self.n = self.f['raw_norm']
+        self.wb = wb
         self.warnings: list[str] = []
         self.defaults: list[str] = []
+        # пункты без вариантов, которые попали в протокол только по записи
+        self.mentioned_singles: list[Item] = []
 
     def warn(self, msg: str):
         if msg not in self.warnings:
@@ -227,6 +235,8 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
         arches = f['binding_arches']
         if not f['binding']:
             return None
+        if any('подвяз' in norm(it.text) for it in ctx.mentioned_singles):
+            return None         # «подвязывание зуба короткой лигатурой» — свой пункт
         if arches not in ('upper', 'lower'):
             ctx.warn('подвязывание: челюсть не распознана — выберите вручную')
             return None
@@ -255,6 +265,8 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
             hit = _first(ch, lambda t: stems[order] in t)
             if hit:
                 return hit
+        if re.search(r'юстир|изгиб', ctx.n):
+            ctx.warn('юстировка: вид изгиба не распознан — допишите вручную')
         return None
 
     if kind == 'dynamics':
@@ -284,8 +296,86 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
         ctx.warn(f'явка через {w} нед: такого варианта нет, выбрано «{nearest.text}»')
         return nearest
 
-    # Группа, для которой правила нет (врач добавил новую): по словам записи
-    return _best_by_words(ch, ctx.n)
+    # Группа, для которой правила нет (врач добавил новую)
+    return _select_new_group(group, ctx)
+
+
+# ---------- пункты, которые врач добавил сам ----------
+def _stems(text: str) -> list[str]:
+    return [word_stem(w) for w in re.findall(r'[а-яa-z]{4,}', norm(text))]
+
+
+def _own_stems(item: Item, wb: Workbook, exclude: list[Item]) -> list[str]:
+    """Основы слов, которые есть только у этого пункта: «цепочк» у «Эластическая
+    цепочка без шага» (а «эластическ» есть и у «эластических лигатур»)."""
+    others = [norm(o.text) for o in wb.items if o is not item and o not in exclude]
+    own = [st for st in _stems(item.text) if not any(stem_in(st, t) for t in others)]
+    return list(dict.fromkeys(own))
+
+
+def _mention(stems: list[str], n: str) -> int | None:
+    """Позиция первого слова записи с такой основой (не отменённого)."""
+    pos = [m.start() for st in stems
+           for m in re.finditer(r'(?<![а-яa-z])' + re.escape(st), n)
+           if not _cancelled(n, re.escape(st))]
+    return min(pos) if pos else None
+
+
+def _phrase(n: str, start: int) -> str:
+    end = min([p for p in (n.find(c, start) for c in ',.;') if p != -1] or [len(n)])
+    return n[start:end]
+
+
+def _single_mentioned(item: Item, ctx: _Ctx) -> bool:
+    stems = _own_stems(item, ctx.wb, []) if ctx.wb else []
+    if stems:
+        return _mention(stems, ctx.n) is not None
+    all_stems = _stems(item.text)
+    return bool(all_stems) and all(stem_in(st, ctx.n) for st in all_stems)
+
+
+def _select_new_group(group: Item, ctx: _Ctx) -> list[Item] | Item | None:
+    """Группа без правила: только если о ней написано (её слова или слова её
+    вариантов), вариант — из той же фразы записи."""
+    ch, wb = group.children, ctx.wb
+    if wb is None:
+        return _best_by_words(ch, ctx.n)
+    family = [group] + ch
+    stems = _own_stems(group, wb, family)
+    for c in ch:
+        stems += [st for st in _own_stems(c, wb, family) if st not in stems]
+    start = _mention(stems, ctx.n)
+    if start is None:
+        return None
+    phrase = _phrase(ctx.n, start)
+    title = group.text.strip()
+
+    arch_of = {c.id: _arch_of(c) or ('both' if 'обе' in norm(c.text) else None) for c in ch}
+    if ch and all(arch_of.values()):            # варианты — челюсти
+        a = arches_in(phrase)
+        if a is None:
+            ctx.warn(f'«{title}»: челюсть не указана — допишите вручную')
+            return []
+        exact = [c for c in ch if arch_of[c.id] == a]
+        if exact:
+            return exact[0]
+        if a == 'both':
+            return [c for c in ch if arch_of[c.id] in ('upper', 'lower')]
+        ctx.warn(f'«{title}»: челюсть не найдена в классификаторе — допишите вручную')
+        return []
+
+    nums = set(re.findall(r'\d+', phrase))
+    scored = []
+    for c in ch:
+        s = sum(stem_in(st, phrase) for st in _stems(c.text))
+        s += sum(2 for d in re.findall(r'\d+', c.text) if d in nums)
+        scored.append((s, c))
+    best = max((s for s, _ in scored), default=0)
+    top = [c for s, c in scored if s == best]
+    if ch and (best == 0 or len(top) > 1):
+        ctx.warn(f'«{title}»: вариант не распознан — допишите вручную')
+        return []
+    return top[0] if ch else []
 
 
 def _select_complaint(section: Item, ctx: _Ctx) -> Item | None:
@@ -352,7 +442,15 @@ def _render_modes(wb: Workbook) -> dict[str, str]:
     return modes
 
 
-def _render(group: Item, sel: Item, mode: str | None) -> list[tuple[str, str]]:
+def _render(group: Item, sel, mode: str | None) -> list[tuple[str, str]]:
+    if isinstance(sel, list):                   # несколько вариантов или ни одного
+        if not sel:
+            return [(group.id, group.text)]
+        if mode == 'join':
+            return [(group.id, f'{group.text.rstrip()} {c.text}') for c in sel]
+        head = [] if mode == 'child_only' or (
+            mode is None and group.text.rstrip().endswith(':')) else [(group.id, group.text)]
+        return head + [(c.id, c.text) for c in sel]
     if mode is None:
         mode = 'child_only' if group.text.rstrip().endswith(':') else 'separate'
     if mode == 'join':
@@ -363,10 +461,22 @@ def _render(group: Item, sel: Item, mode: str | None) -> list[tuple[str, str]]:
 
 
 def build_protocol(wb: Workbook, raw: str) -> Protocol:
-    ctx = _Ctx(raw)
+    ctx = _Ctx(raw, wb)
     if ctx.f['system_type'] is None:
         ctx.warn('тип системы не распознан (лигатурная / самолигирующая)')
+    cl = ctx.f['classes']
+    if cl['molar'] is None and cl['canine'] is None and \
+            re.search(r'класс\w*\s*(?:[1-3]|i{1,3})\b|(?:[1-3]|i{1,3})\s*класс', ctx.n):
+        ctx.warn('класс: не указано, по молярам или по клыкам — допишите вручную')
+    if ctx.f['wire_no_arch']:
+        ctx.default('дуга на обеих челюстях (челюсть не указана)')
     modes = _render_modes(wb)
+    always = _always_singles(wb)
+    singles = {it.id: (it.id in always or _single_mentioned(it, ctx))
+               for s in wb.sections for it in s.children
+               if not it.children and not it.orphan}
+    ctx.mentioned_singles = [wb.by_id[i] for i, ok in singles.items()
+                             if ok and i not in always]
     lines: list[tuple[str, str]] = []
     for section in wb.sections:
         out: list[tuple[str, str]] = []
@@ -378,15 +488,31 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
             for item in section.children:
                 if item.children:
                     sel = _select(item, ctx)
-                    if sel:
+                    if sel is not None:     # [] — группа упомянута, вариант не выбран
                         out += _render(item, sel, modes.get(item.id))
-                elif not item.orphan or _orphan_applies(item, ctx):
+                elif item.orphan:
+                    if _orphan_applies(item, ctx):
+                        out.append((item.id, item.text))
+                elif singles.get(item.id):
                     out.append((item.id, item.text))
         if out:
             lines += [(section.id, section.text)] + out
     if ctx.f['wire_hint'] and not ctx.f['wires']:
         ctx.warn('дуга: упоминание не распознано — проверьте вручную')
     return Protocol(lines, ctx.warnings, ctx.defaults)
+
+
+def _always_singles(wb: Workbook) -> set[str]:
+    """Пункты без вариантов, которые идут в протокол всегда: есть хотя бы в одном
+    эталоне (осмотр, фотопротокол). Пункт, которого нет ни в одном эталоне
+    (врач только что добавил «Подвязывание зуба…»), — только когда о нём
+    написано. Без эталонов — все."""
+    singles = {it.id for s in wb.sections for it in s.children
+               if not it.children and not it.orphan}
+    used = {code for case in wb.references for code, _ in case.lines}
+    if not used:
+        return singles
+    return singles & used
 
 
 def _key(line: tuple[str, str]) -> tuple[str, str]:

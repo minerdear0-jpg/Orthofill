@@ -217,6 +217,9 @@ class Controller:
             return 'Сначала сформируйте протокол'
         if raw.strip() != self._last_raw.strip():
             return 'Запись изменена — сформируйте протокол заново'
+        if not wb.path.exists():
+            return (f'Файл «{wb.path.name}» не найден — его переименовали или перенесли. '
+                    f'Откройте его заново кнопкой «Открыть файл…»')
         lines = lines_for_reference(wb, self.last_protocol, final_text)
         try:
             case_id = append_reference(wb.path, raw.strip(), lines)

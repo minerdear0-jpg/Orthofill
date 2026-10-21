@@ -110,7 +110,7 @@ def test_i4_sided_classes_warn(wb):
 
 # I5 — неизвестный тип системы
 def test_i5_unknown_system(wb):
-    p = build_protocol(wb, "самолиг, рабочий")
+    p = build_protocol(wb, "керамика, рабочий")
     assert "тип системы не распознан (лигатурная / самолигирующая)" in p.warnings
     assert not {"4h1", "4h2"} & set(ids(p))
 

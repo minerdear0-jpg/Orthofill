@@ -445,6 +445,13 @@ class MarkCaseDialog:
         body.pack(fill='both', expand=True)
 
         ttk.Label(body, text='Что пошло не так?', font=app.f_title).pack(anchor='w', pady=(0, 8))
+        last = app.ctl.last_protocol
+        self.unchanged = last is not None and corrected.strip() == last.text.strip()
+        if self.unchanged:
+            ttk.Label(body, foreground=WARN_TEXT, wraplength=420, padding=(0, 0, 0, 8),
+                      text='Протокол не исправлен — разработчик не увидит, что не так. '
+                           'Исправьте протокол в окне или напишите внизу пару слов.'
+                      ).pack(anchor='w')
         self.kind = tk.StringVar(value='unknown')
         for key, hint in self.CHOICES:
             ttk.Radiobutton(body, text=CASE_KINDS[key], value=key, variable=self.kind,
@@ -458,7 +465,9 @@ class MarkCaseDialog:
         self.raw_entry.insert(0, raw)
         self.raw_entry.pack(fill='x')
 
-        self.after_raw = ttk.Label(body, text='Своими словами, если хотите (необязательно):')
+        self.after_raw = ttk.Label(body, text=(
+            'Что не так? Своими словами:' if self.unchanged
+            else 'Своими словами, если хотите (необязательно):'))
         self.after_raw.pack(anchor='w', pady=(10, 2))
         self.comment = ttk.Entry(body, font=app.f_text)
         self.comment.pack(fill='x')
