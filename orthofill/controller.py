@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+import traceback
+
+from .diag import DiagLog, text_diff
 from .engine import Protocol, build_protocol, check_references, rule_warnings
+from .parse import extract_facts
 from .journal import Journal
 from .workbook import (FileLockedError, Workbook, WorkbookError, append_reference,
                        lines_for_reference, load_workbook_file)
@@ -42,9 +46,31 @@ class Controller:
         self.last_entry_id: int | None = None
         self._last_shown = ''      # текст, выданный программой или уже скопированный
         self._last_raw = ''        # запись, по которой сформирован last_protocol
+        self.diag_dir = journal.db_path.parent / 'diagnostics'
+        self._diag = DiagLog(self.diag_dir)
+        self.diagnostics = False
+
+    # ---------- диагностика ----------
+    def set_diagnostics(self, enabled: bool) -> None:
+        if enabled:
+            self.diagnostics = True
+            self._log('diagnostics_on')
+        else:
+            self._log('diagnostics_off')
+            self.diagnostics = False
+        self.journal.set_setting('diagnostics', '1' if enabled else '0')
+
+    def _log(self, event: str, **data) -> None:
+        if self.diagnostics:
+            self._diag.write(event, **data)
+
+    def _log_error(self, where: str, e: Exception) -> None:
+        self._log('error', where=where, error=f'{type(e).__name__}: {e}',
+                  traceback=''.join(traceback.format_exception(e)))
 
     # ---------- файл ----------
     def startup(self) -> None:
+        self.diagnostics = self.journal.get_setting('diagnostics') == '1'
         last = self.journal.get_setting('last_file')
         if not last:
             return
@@ -64,11 +90,14 @@ class Controller:
         except Exception as e:     # непредвиденное — показать, а не упасть молча
             self.workbook, self.details = None, [repr(e)]
             self.file_status = f'✗ Ошибка: {e}'
+            self._log_error('open_file', e)
             return
         self.workbook = wb
         self.journal.set_setting('last_file', str(path))
         self.journal.snapshot(wb)
         self._refresh_status()
+        self._log('open_file', file=wb.path.name, path=str(wb.path), sha256=wb.sha256,
+                  status=self.file_status, details=self.details)
 
     def _refresh_status(self) -> None:
         wb = self.workbook
@@ -107,12 +136,19 @@ class Controller:
         try:
             p = build_protocol(self.workbook, raw)
         except Exception as e:
+            self._log_error('generate', e)
             return fail(f'✗ Ошибка: {e}')
         self.last_protocol, self._last_raw = p, raw
         self.last_entry_id = self.journal.log_generate(raw, p, self.workbook.sha256)
         self.clipboard(p.text)
         self.journal.log_copy(self.last_entry_id, p.text)
         self._last_shown = p.text
+        if self.diagnostics:
+            facts = extract_facts(raw)
+            self._log('generate', entry_id=self.last_entry_id, raw=raw,
+                      raw_norm=facts['raw_norm'], facts=facts,
+                      lines=p.lines, warnings=p.warnings, defaults=p.defaults,
+                      file=self.workbook.path.name, sha256=self.workbook.sha256)
         defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
         return GenerateResult(p.text, 'Скопировано в буфер', p.warnings, defaults, True)
 
@@ -125,6 +161,11 @@ class Controller:
         self._last_shown = text
         if self.last_entry_id is not None:
             self.journal.log_copy(self.last_entry_id, text)
+        if self.diagnostics and self.last_protocol is not None:
+            generated = self.last_protocol.text
+            diff = text_diff(generated, text) if text.strip() != generated.strip() else ''
+            self._log('copy', entry_id=self.last_entry_id, raw=self._last_raw,
+                      generated=generated, copied=text, edited=bool(diff), diff=diff)
         return 'Скопировано в буфер'
 
     def save_reference(self, raw: str, final_text: str) -> str:
@@ -139,8 +180,11 @@ class Controller:
         except FileLockedError as e:
             return str(e)
         except Exception as e:
+            self._log_error('save_reference', e)
             return f'✗ Ошибка: {e}'
         if self.last_entry_id is not None:
             self.journal.mark_reference(self.last_entry_id, case_id)
+        self._log('save_reference', entry_id=self.last_entry_id, case_id=case_id,
+                  raw=raw.strip(), lines=lines, file=wb.path.name)
         self.open_file(wb.path)
         return f'Эталон {case_id} сохранён в {wb.path.name}'

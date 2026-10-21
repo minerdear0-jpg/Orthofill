@@ -48,6 +48,8 @@ class App:
         self._build()
         self._bind_keys()
         self.ctl.startup()
+        self.diag_var.set(self.ctl.diagnostics)
+        self._show_diag()
         self._show_file_status()
         self.raw_txt.focus_set()
 
@@ -84,8 +86,13 @@ class App:
         tk.Label(head, text='Orthofill', bg=ACCENT, fg='white', font=self.f_title).pack(side='left')
         tk.Label(head, text=VERSION_LABEL, bg=BADGE_BG, fg=BADGE_FG, font=self.f_small,
                  padx=6).pack(side='left', padx=(8, 0))
-        tk.Label(head, text='Протокол активации', bg=ACCENT, fg='#d7e6f2',
-                 font=self.f_small).pack(side='right')
+        about = tk.Label(head, text='О программе', bg=ACCENT, fg='white', cursor='hand2',
+                         font=tkfont.Font(family=self.f_small.actual('family'), size=9,
+                                          underline=True))
+        about.pack(side='right')
+        about.bind('<Button-1>', lambda e: self.about())
+        self.head_lbl = tk.Label(head, text='', bg=ACCENT, font=self.f_small, padx=12)
+        self.head_lbl.pack(side='right')
 
         # Строка файла
         self.bar = bar = ttk.Frame(r, padding=(12, 8, 12, 4))
@@ -96,11 +103,15 @@ class App:
         self.file_lbl.pack(side='left')
         self.bar_right = right = ttk.Frame(bar)
         self.details_btn = ttk.Button(right, text='Подробнее', command=self.show_details)
-        self.details_btn.pack(side='left')
         self.topmost = tk.BooleanVar(value=self.ctl.journal.get_setting('topmost') == '1')
-        ttk.Checkbutton(right, text='Поверх окон', variable=self.topmost,
-                        command=self._apply_topmost).pack(side='left', padx=8)
-        ttk.Button(right, text='О программе', command=self.about).pack(side='left')
+        topmost_cb = ttk.Checkbutton(right, text='Поверх окон', variable=self.topmost,
+                                     command=self._apply_topmost)
+        self.diag_var = tk.BooleanVar(value=False)
+        diag_cb = ttk.Checkbutton(right, text='Диагностика', variable=self.diag_var,
+                                  command=self._toggle_diag)
+        self.diag_btn = ttk.Button(right, text='Папка', command=self.open_diag_folder)
+        # широко — в ряд; узко — сеткой 2×2 (см. _relayout)
+        self.bar_widgets = [self.details_btn, topmost_cb, diag_cb, self.diag_btn]
         self._apply_topmost()
 
         # Ввод и протокол
@@ -156,12 +167,18 @@ class App:
             p.grid_forget()
         self.bar_left.pack_forget()
         self.bar_right.pack_forget()
+        for w in self.bar_widgets:
+            w.grid_forget()
         if mode == 'wide':
             self.bar_left.pack(side='left')
             self.bar_right.pack(side='right')
-        else:   # узко: кнопки окна — второй строкой
+            for i, w in enumerate(self.bar_widgets):
+                w.grid(row=0, column=i, padx=(8, 0))
+        else:   # узко: кнопки окна — второй строкой, сеткой 2×2
             self.bar_left.pack(anchor='w')
-            self.bar_right.pack(anchor='e', pady=(6, 0))
+            self.bar_right.pack(anchor='w', pady=(6, 0))
+            for i, w in enumerate(self.bar_widgets):
+                w.grid(row=i % 2, column=i // 2, sticky='w', padx=(0, 12), pady=2)
         b = self.body
         for i in range(2):
             b.columnconfigure(i, weight=0)
@@ -291,7 +308,33 @@ class App:
         wb = self.ctl.workbook
         messagebox.showinfo(TITLE, f'{TITLE}\n\n{DISCLAIMER}\n\n'
                                    f'Файл классификатора:\n{wb.path if wb else "не открыт"}\n\n'
-                                   f'Журнал:\n{self.ctl.journal.db_path}')
+                                   f'Журнал:\n{self.ctl.journal.db_path}\n\n'
+                                   f'Диагностика ({"включена" if self.ctl.diagnostics else "выключена"}):\n'
+                                   f'{self.ctl.diag_dir}')
+
+    def _toggle_diag(self):
+        self.ctl.set_diagnostics(self.diag_var.get())
+        self._show_diag()
+        if self.ctl.diagnostics:
+            self._status(f'Диагностика включена: {self.ctl.diag_dir}')
+        else:
+            self._status('Диагностика выключена')
+
+    def _show_diag(self):
+        on = self.ctl.diagnostics
+        self.head_lbl.configure(text='● Диагностика включена' if on else 'Протокол активации',
+                                fg=BADGE_BG if on else '#d7e6f2')
+        self.diag_btn.state(['!disabled'] if on or self.ctl.diag_dir.exists() else ['disabled'])
+
+    def open_diag_folder(self):
+        d = self.ctl.diag_dir
+        d.mkdir(parents=True, exist_ok=True)
+        if sys.platform == 'win32':
+            import os
+            os.startfile(d)
+        else:
+            import subprocess
+            subprocess.Popen(['xdg-open', str(d)])
 
     def _apply_topmost(self):
         self.root.attributes('-topmost', self.topmost.get())
