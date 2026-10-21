@@ -8,7 +8,6 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .engine import guess_settings
 from .journal import Journal, _now
 from .workbook import DictEntry, Item, ReferenceCase, Workbook
 
@@ -65,7 +64,8 @@ class PresetStore:
             self._write(preset_id, wb, keep_dictionary=True)
 
     def _write(self, pid: int, wb: Workbook, keep_dictionary: bool) -> None:
-        guess_settings(wb)
+        """Пишутся только явно заданные свойства; угаданные — None (их угадывает
+        build_protocol по текущим эталонам)."""
         db = self._db
         for table in ('preset_items', 'reference_cases', 'reference_lines'):
             db.execute(f'DELETE FROM {table} WHERE preset_id=?', (pid,))

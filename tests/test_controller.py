@@ -271,3 +271,84 @@ def test_generate_without_copy(ctl, clip, order_xlsx):
     ctl.import_xlsx(order_xlsx)
     r = ctl.generate("лигатурная", copy=False)
     assert r.text and not r.copied and clip == [] and ctl.last_entry_id is not None
+
+
+# ---------- итоговое ревью 0.2 beta 1 ----------
+def _dup_ref_file(order_xlsx):
+    """Блок эталона скопирован ниже вместе с номером «1» — в 0.1 это работало."""
+    import openpyxl
+    from orthofill.workbook import load_workbook_file
+    wb = load_workbook_file(order_xlsx)
+    ref = wb.references[0]
+    xl = openpyxl.load_workbook(order_xlsx)
+    ws = xl.worksheets[0]
+    r = ws.max_row + 2
+    ws.cell(r, 3, 1)
+    ws.cell(r, 4, ref.raw)
+    for i, (code, text) in enumerate(ref.lines, start=1):
+        ws.cell(r + i, 5, code or None)
+        ws.cell(r + i, 6, text)
+    xl.save(order_xlsx)
+
+
+def test_duplicate_reference_number_is_file_problem(ctl, order_xlsx):
+    _dup_ref_file(order_xlsx)
+    ctl.import_xlsx(order_xlsx)
+    assert ctl.file_status.startswith("✗") and ctl.presets.list() == []
+    assert any("эталон" in d and "повторяется" in d for d in ctl.details)
+
+
+def test_import_db_failure_is_shown(ctl, order_xlsx, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("база занята")
+    monkeypatch.setattr(ctl.presets, "create", boom)
+    ctl.import_xlsx(order_xlsx)                    # не падает
+    assert ctl.file_status == "✗ Ошибка: база занята" and ctl.workbook is None
+
+
+def test_startup_survives_bad_last_file(ctl, order_xlsx, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("сбой")
+    monkeypatch.setattr(ctl.presets, "create", boom)
+    ctl.journal.set_setting("last_file", str(order_xlsx))
+    ctl.startup()                                  # окно должно открыться
+    assert ctl.workbook is None and ctl.file_status.startswith("✗")
+
+
+def test_majority_rule_recomputed_after_reference(ctl, order_xlsx_with, tmp_path):
+    """Пресет без эталонов: все пункты «всегда»; после эталона без пункта —
+    пункт снова только по упоминанию (угаданное не застывает в базе)."""
+    import openpyxl
+    wb = order_xlsx_with(("4o", "Подвязывание зуба короткой металлической лигатурой."))
+    xl = openpyxl.load_workbook(wb.path)
+    ws = xl.worksheets[0]
+    for row in ws.iter_rows(min_col=3, max_col=6):
+        for c in row:
+            c.value = None
+    xl.save(wb.path)
+    ctl.import_xlsx(wb.path)
+    assert "Подвязывание" in ctl.generate("лигатурная").text
+    text = ctl.generate("лигатурная").text.replace(
+        "Подвязывание зуба короткой металлической лигатурой.\n", "")
+    ctl.save_reference("лигатурная", text)
+    assert "Подвязывание" not in ctl.generate("лигатурная").text
+    assert ctl.workbook.by_id["4o"].when is None       # в базе — не угаданное
+
+
+def test_export_writes_only_explicit_settings(ctl, order_xlsx, tmp_path):
+    import openpyxl
+    ctl.import_xlsx(order_xlsx)
+    out = tmp_path / "out.xlsx"
+    ctl.export_xlsx(out)
+    rows = list(openpyxl.load_workbook(out)["Настройки"].iter_rows(min_row=2, values_only=True))
+    assert rows == []
+
+
+def test_entry_links_to_preset_snapshot(ctl, order_xlsx):
+    ctl.import_xlsx(order_xlsx)
+    ctl.generate("лигатурная, перепел")
+    ctl.save_reference("лигатурная, перепел", ctl.last_protocol.text)
+    ctl.generate("лигатурная")
+    db = ctl.journal._db
+    for (sha,) in db.execute("SELECT sha256 FROM entries"):
+        assert db.execute("SELECT 1 FROM classifier_snapshots WHERE sha256=?", (sha,)).fetchone()

@@ -146,7 +146,11 @@ def load_workbook_file(path: str | Path) -> Workbook:
                 labels.setdefault(text, []).append(code)
         # --- эталоны
         if c is not None and str(c).strip():
-            references.append(ReferenceCase(clean_code(c), clean_text(d), []))
+            case_id = clean_code(c)
+            if any(r.case_id == case_id for r in references):
+                problems.append(f'строка {rownum}: номер эталона «{case_id}» повторяется '
+                                f'(колонка C) — дайте эталону новый номер')
+            references.append(ReferenceCase(case_id, clean_text(d), []))
         elif references and f is not None and str(f).strip():
             code = clean_code(e) if e is not None and str(e).strip() else ''
             references[-1].lines.append((code, clean_text(f)))

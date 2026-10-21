@@ -3,7 +3,7 @@ import sqlite3
 
 import pytest
 
-from orthofill.engine import build_protocol
+from orthofill.engine import build_protocol, rule_kind
 from orthofill.journal import Journal
 from orthofill.workbook import DictEntry, load_workbook_file
 
@@ -25,7 +25,9 @@ def test_settings_survive(store, order_xlsx):
     wb.by_id["4b"].words = ["дуг"]
     wb2 = store.load(store.create(wb))
     assert wb2.by_id["5d"].default == "5d3" and wb2.by_id["4b"].words == ["дуг"]
-    assert wb2.by_id["3f"].method == "hygiene" and wb2.by_id["4a"].when == "always"
+    # угаданное не хранится (None), но разбор угадывает его сам
+    assert wb2.by_id["3f"].method is None and wb2.by_id["4a"].when is None
+    assert rule_kind(wb2.by_id["3f"]) == "hygiene"
 
 
 def test_unique_names(store, order_xlsx):

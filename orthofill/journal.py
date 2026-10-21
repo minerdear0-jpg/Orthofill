@@ -110,7 +110,7 @@ class Journal:
              'references': [[r.case_id, r.raw, r.lines] for r in wb.references]},
             ensure_ascii=False)
         self._exec('INSERT OR IGNORE INTO classifier_snapshots VALUES (?,?,?,?)',
-                   (wb.sha256, wb.path.name, _now(), content))
+                   (wb.sha256, wb.source or (wb.path.name if wb.path else ''), _now(), content))
 
     def log_generate(self, raw: str, protocol, sha256: str, preset_id: int | None = None) -> int:
         cur = self._exec(

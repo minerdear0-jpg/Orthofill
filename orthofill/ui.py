@@ -415,8 +415,9 @@ class App:
             self._status(f'Пресет: {self.ctl.workbook.name}')
             return
         self._undo_to = prev
-        self._regenerate_silently(raw, f'Пресет: {self.ctl.workbook.name} — протокол пересобран',
-                                  undo=True)
+        self._regenerate_silently(
+            raw, f'Пресет: {self.ctl.workbook.name} — протокол пересобран; '
+                 f'в буфере прежний — нажмите «Копировать»', undo=True)
 
     def _regenerate_silently(self, raw: str, status: str, undo=False):
         """Пересобрать без копирования — буфер при смене пресета не меняется."""
@@ -433,7 +434,8 @@ class App:
         self.switch_bar.pack_forget()
         raw = self.raw_txt.get('1.0', 'end-1c').strip()
         if raw:
-            self._regenerate_silently(raw, 'Протокол пересобран (в буфер не копировался)')
+            self._regenerate_silently(
+                raw, 'Протокол пересобран; в буфере прежний — нажмите «Копировать»')
 
     def _undo_switch(self):
         pid, self._undo_to = self._undo_to, None
@@ -443,7 +445,9 @@ class App:
         self._show_file_status()
         raw = self.raw_txt.get('1.0', 'end-1c').strip()
         if raw:
-            self._regenerate_silently(raw, f'Пресет возвращён: {self.ctl.workbook.name}')
+            self._regenerate_silently(
+                raw, f'Пресет возвращён: {self.ctl.workbook.name}; '
+                     f'в буфере прежний — нажмите «Копировать»')
 
     def generate(self):
         current = self.out_txt.get('1.0', 'end-1c')

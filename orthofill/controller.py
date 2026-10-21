@@ -105,13 +105,14 @@ class Controller:
             return
         last = self.journal.get_setting('last_file')     # база 0.1: файл → пресет
         if last and Path(last).exists():
-            self.import_xlsx(Path(last))
+            self.import_xlsx(Path(last))                 # ошибки не роняют запуск
         else:
             self.file_status = NO_PRESETS
 
     def _activate(self, preset_id: int) -> None:
         self.preset_id = preset_id
         self.workbook = self.presets.load(preset_id)
+        self.journal.snapshot(self.workbook)       # entries.sha256 → снимок пресета
         self.journal.set_setting('preset_id', str(preset_id))
         self.last_protocol, self._last_raw, self._last_shown = None, '', ''
         self.last_entry_id = None
@@ -137,13 +138,17 @@ class Controller:
             self.file_status = f'✗ ошибки в файле: {len(wb.problems)} — подробнее'
             self._log('import', file=path.name, status=self.file_status, details=self.details)
             return
-        self.journal.snapshot(wb)
-        if update_id is not None:
-            self.presets.update(update_id, wb)
-            pid = update_id
-        else:
-            pid = self.presets.create(wb)
-        self._activate(pid)
+        try:
+            if update_id is not None:
+                self.presets.update(update_id, wb)
+                pid = update_id
+            else:
+                pid = self.presets.create(wb)
+            self._activate(pid)
+        except Exception as e:     # транзакция откатилась — пресеты как были
+            self.details, self.file_status = [repr(e)], f'✗ Ошибка: {e}'
+            self._log_error('import', e)
+            return
         self._log('import', file=path.name, sha256=wb.sha256, preset=self._preset_ref(),
                   update=update_id is not None, items=len(wb.items),
                   references=len(wb.references), dictionary_added=len(wb.dictionary),
@@ -289,5 +294,6 @@ class Controller:
         self._log('save_reference', entry_id=self.last_entry_id, case_id=case_id,
                   raw=raw.strip(), lines=lines, preset=self._preset_ref())
         self.workbook = self.presets.load(self.preset_id)
+        self.journal.snapshot(self.workbook)
         self._refresh_status()
         return f'Эталон {case_id} сохранён в пресет «{wb.name}»'

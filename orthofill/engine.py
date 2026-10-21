@@ -71,18 +71,31 @@ def rule_kind(group: Item) -> str | None:
     return None if kind == 'words' else kind
 
 
+def _guess_when(it: Item, refs: list[set[str]]) -> str:
+    """«Всегда» — если пункт есть больше чем в половине эталонов (без эталонов — всегда)."""
+    used = sum(it.id in r for r in refs)
+    return 'always' if not refs or used * 2 > len(refs) else 'mentioned'
+
+
+def _effective_when(wb: Workbook) -> dict[str, str]:
+    """«Когда в протоколе» для отдельных пунктов: заданное или угаданное заново
+    по текущим эталонам (угаданное не хранится — меняется с эталонами)."""
+    refs = [{code for code, _ in case.lines} for case in wb.references if case.lines]
+    return {it.id: it.when or _guess_when(it, refs) for it in wb.items
+            if not it.children and it.level == 2 and not it.orphan}
+
+
 def guess_settings(wb: Workbook) -> None:
-    """Заполнить пустые свойства: способ выбора групп — по тексту; «всегда» для
-    отдельного пункта — если он есть больше чем в половине эталонов (без
-    эталонов — всегда). Заданное явно не трогается."""
+    """Записать угаданные свойства в пункты как явные (для редактора и экспорта
+    «как сейчас работает»). Разбор их не требует: build_protocol угадывает сам.
+    Заданное явно не трогается."""
     refs = [{code for code, _ in case.lines} for case in wb.references if case.lines]
     for it in wb.items:
         if it.children:
             if it.method is None:
                 it.method = _guess_kind(it) or 'words'
         elif it.level == 2 and not it.orphan and it.when is None:
-            used = sum(it.id in r for r in refs)
-            it.when = 'always' if not refs or used * 2 > len(refs) else 'mentioned'
+            it.when = _guess_when(it, refs)
 
 
 def _arch_of(group: Item) -> str | None:
@@ -494,13 +507,13 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
         ctx.warn('класс: не указано, по молярам или по клыкам — допишите вручную')
     if ctx.f['wire_no_arch']:
         ctx.default('дуга на обеих челюстях (челюсть не указана)')
-    guess_settings(wb)
     modes = _render_modes(wb)
-    singles = {it.id: (it.when == 'always' or _single_mentioned(it, ctx))
+    when = _effective_when(wb)
+    singles = {it.id: (when[it.id] == 'always' or _single_mentioned(it, ctx))
                for s in wb.sections for it in s.children
                if not it.children and not it.orphan}
     ctx.mentioned_singles = [wb.by_id[i] for i, ok in singles.items()
-                             if ok and wb.by_id[i].when != 'always']
+                             if ok and when[i] != 'always']
     lines: list[tuple[str, str]] = []
     for section in wb.sections:
         out: list[tuple[str, str]] = []
