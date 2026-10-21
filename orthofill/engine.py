@@ -55,12 +55,52 @@ class CaseResult:
     extra: list[tuple[str, str]]
 
 
-def rule_kind(group: Item) -> str | None:
+# Способы выбора варианта — подписи для врача (лист «Настройки», редактор)
+METHOD_LABELS = {
+    'words':    'по словам записи',
+    'system':   'тип системы',
+    'stage':    'этап лечения',
+    'mucosa':   'слизистая (норма / эрозия)',
+    'hygiene':  'норма / не норма (гигиена)',
+    'bracket':  'норма / не норма (брекет-система)',
+    'relation': 'класс по сторонам (моляры, клыки)',
+    'wire':     'дуга (размер, материал, челюсть)',
+    'ligature': 'лигатуры по челюсти',
+    'binding':  'подвязывание по челюсти',
+    'elastics': 'названия (эластики)',
+    'adjust':   'изгиб по порядку',
+    'dynamics': 'динамика (по плану / без динамики)',
+    'visit':    'срок (недели)',
+}
+
+
+def _guess_kind(group: Item) -> str | None:
     n = norm(group.text)
     for kind, rx in _KINDS:
         if re.search(rx, n):
             return kind
     return None
+
+
+def rule_kind(group: Item) -> str | None:
+    """Способ выбора группы: заданный в пресете или угаданный по тексту.
+    None — «по словам записи» (встроенного правила нет)."""
+    kind = group.method or _guess_kind(group)
+    return None if kind == 'words' else kind
+
+
+def guess_settings(wb: Workbook) -> None:
+    """Заполнить пустые свойства: способ выбора групп — по тексту; «всегда» для
+    отдельного пункта — если он есть больше чем в половине эталонов (без
+    эталонов — всегда). Заданное явно не трогается."""
+    refs = [{code for code, _ in case.lines} for case in wb.references if case.lines]
+    for it in wb.items:
+        if it.children:
+            if it.method is None:
+                it.method = _guess_kind(it) or 'words'
+        elif it.level == 2 and not it.orphan and it.when is None:
+            used = sum(it.id in r for r in refs)
+            it.when = 'always' if not refs or used * 2 > len(refs) else 'mentioned'
 
 
 def _arch_of(group: Item) -> str | None:
@@ -327,6 +367,8 @@ def _phrase(n: str, start: int) -> str:
 
 
 def _single_mentioned(item: Item, ctx: _Ctx) -> bool:
+    if item.words and _mention(item.words, ctx.n) is not None:
+        return True
     stems = _own_stems(item, ctx.wb, []) if ctx.wb else []
     if stems:
         return _mention(stems, ctx.n) is not None
@@ -341,7 +383,7 @@ def _select_new_group(group: Item, ctx: _Ctx) -> list[Item] | Item | None:
     if wb is None:
         return _best_by_words(ch, ctx.n)
     family = [group] + ch
-    stems = _own_stems(group, wb, family)
+    stems = _own_stems(group, wb, family) + list(group.words)
     for c in ch:
         stems += [st for st in _own_stems(c, wb, family) if st not in stems]
     start = _mention(stems, ctx.n)
@@ -470,13 +512,13 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
         ctx.warn('класс: не указано, по молярам или по клыкам — допишите вручную')
     if ctx.f['wire_no_arch']:
         ctx.default('дуга на обеих челюстях (челюсть не указана)')
+    guess_settings(wb)
     modes = _render_modes(wb)
-    always = _always_singles(wb)
-    singles = {it.id: (it.id in always or _single_mentioned(it, ctx))
+    singles = {it.id: (it.when == 'always' or _single_mentioned(it, ctx))
                for s in wb.sections for it in s.children
                if not it.children and not it.orphan}
     ctx.mentioned_singles = [wb.by_id[i] for i, ok in singles.items()
-                             if ok and i not in always]
+                             if ok and wb.by_id[i].when != 'always']
     lines: list[tuple[str, str]] = []
     for section in wb.sections:
         out: list[tuple[str, str]] = []
@@ -487,7 +529,7 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
         else:
             for item in section.children:
                 if item.children:
-                    sel = _select(item, ctx)
+                    sel = _select_or_default(item, ctx)
                     if sel is not None:     # [] — группа упомянута, вариант не выбран
                         out += _render(item, sel, modes.get(item.id))
                 elif item.orphan:
@@ -502,17 +544,19 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
     return Protocol(lines, ctx.warnings, ctx.defaults)
 
 
-def _always_singles(wb: Workbook) -> set[str]:
-    """Пункты без вариантов, которые идут в протокол всегда: есть хотя бы в одном
-    эталоне (осмотр, фотопротокол). Пункт, которого нет ни в одном эталоне
-    (врач только что добавил «Подвязывание зуба…»), — только когда о нём
-    написано. Без эталонов — все."""
-    singles = {it.id for s in wb.sections for it in s.children
-               if not it.children and not it.orphan}
-    used = {code for case in wb.references for code, _ in case.lines}
-    if not used:
-        return singles
-    return singles & used
+def _select_or_default(group: Item, ctx: _Ctx):
+    """Выбор правилом; если врач не написал (правило ничего не выбрало или
+    подставило своё «по умолчанию») — вариант по умолчанию из пресета."""
+    n_def, n_warn = len(ctx.defaults), len(ctx.warnings)
+    sel = _select(group, ctx)
+    target = group.default and next((c for c in group.children if c.id == group.default), None)
+    if not target or len(ctx.warnings) > n_warn:
+        return sel
+    if sel is None or len(ctx.defaults) > n_def:
+        del ctx.defaults[n_def:]
+        ctx.default(f'{group.text.strip()} {target.text.strip()}')
+        return target
+    return sel
 
 
 def _key(line: tuple[str, str]) -> tuple[str, str]:

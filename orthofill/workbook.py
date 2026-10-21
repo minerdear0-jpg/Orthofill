@@ -24,6 +24,11 @@ class Item:
     parent: str | None
     orphan: bool = False            # вариант без своей группы (4h1)
     children: list['Item'] = field(default_factory=list)
+    # Свойства пресета (None — угадать, см. engine.guess_settings)
+    method: str | None = None       # группа: способ выбора варианта (ключ METHOD_LABELS)
+    when: str | None = None         # отдельный пункт: 'always' | 'mentioned'
+    default: str | None = None      # группа: код варианта, если врач не написал
+    words: list[str] = field(default_factory=list)   # доп. слова упоминания
 
 
 @dataclass

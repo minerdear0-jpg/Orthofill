@@ -40,8 +40,11 @@ def test_file_status_ok(ctl, order_xlsx):
 
 
 def test_file_status_mismatch(ctl, order_xlsx):
-    from orthofill.workbook import append_reference
-    append_reference(order_xlsx, "лигатурная", [("1", "Жалобы: активация")])
+    from orthofill.engine import build_protocol
+    from orthofill.workbook import append_reference, load_workbook_file
+    lines = build_protocol(load_workbook_file(order_xlsx), "лигатурная").lines
+    lines = [(c, "6 недель.") if c == "5d2" else (c, t) for c, t in lines]
+    append_reference(order_xlsx, "лигатурная", lines)
     ctl.open_file(order_xlsx)
     assert ctl.file_status == "⚠ эталоны 1/2 — подробнее"
     assert any("эталон 2" in d for d in ctl.details)
