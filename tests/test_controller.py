@@ -128,14 +128,14 @@ def test_save_reference_locked(ctl, order_xlsx, monkeypatch):
 
 def test_cli_test_mode():
     r = subprocess.run([sys.executable, "-m", "orthofill", "--test", str(ORDER)],
-                       cwd=ROOT, capture_output=True, text=True)
+                       cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
     assert r.returncode == 0, r.stdout + r.stderr
     assert "[OK]" in r.stdout
 
 
 def test_cli_raw_mode():
     r = subprocess.run([sys.executable, "-m", "orthofill", "--xlsx", str(ORDER), "--raw",
-                        "замена дуги верх 14x25 ss"], cwd=ROOT, capture_output=True, text=True)
+                        "замена дуги верх 14x25 ss"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
     assert r.returncode == 0 and r.stdout.startswith("Жалобы: активация")
     assert "нет в классификаторе" in r.stderr
 
@@ -145,7 +145,7 @@ def test_cli_raw_mode():
     reason="нужен дисплей")
 def test_cli_selftest_ui():
     r = subprocess.run([sys.executable, "-m", "orthofill", "--selftest-ui"],
-                       cwd=ROOT, capture_output=True, text=True, timeout=60)
+                       cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=60)
     assert r.returncode == 0, r.stderr
 
 
