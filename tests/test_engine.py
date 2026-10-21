@@ -41,11 +41,33 @@ def test_no_defaults_when_written(order_xlsx):
     assert "этап рабочий" not in p.defaults and "явка 4 нед" not in p.defaults
 
 
-def test_join_mode_from_reference(order_xlsx):
-    p = build_protocol(load_workbook_file(order_xlsx), "самолигирующая, детализация")
-    assert ("2b", "Тип системы вестибулярная самолигируемая.") in p.lines
-    assert ("2c", "Этап детализация") in p.lines
+def test_rows_merge_and_lines_per_item(order_xlsx):
+    p = build_protocol(load_workbook_file(order_xlsx), "самолигирующая, детализация, явка 6 нед")
+    assert ("2b", "Тип системы") in p.lines and ("2b1", "вестибулярная самолигируемая.") in p.lines
+    assert "Тип системы вестибулярная самолигируемая." in p.text.splitlines()
+    assert "Явка на следующую активацию через 6 недель." in p.text.splitlines()
     assert "4h2" in ids(p) and "4h1" not in ids(p)
+    assert "\n\n" not in p.text
+
+
+def test_section_rows(order_xlsx):
+    p = build_protocol(load_workbook_file(order_xlsx), "лигатурная")
+    assert [r.text for r in p.rows if r.section] == [
+        "Жалобы: активация", "Анамнез: активация", "Объективно: активация", "Лечение:", "Рекомендации:"]
+
+
+def test_check_marks(order_xlsx):
+    p = build_protocol(load_workbook_file(order_xlsx),
+                       "лигатурная, по молярам 1, замена дуги 18х25 нити, явка 5 нед")
+    marked = {c for r in p.rows if r.check for c in r.codes}
+    assert {"3g", "3h", "4b", "4c", "5d"} <= marked
+    assert not any(r.check for r in p.rows if "3f" in r.codes)      # по умолчанию — без метки
+
+
+def test_no_marks_when_explicit(order_xlsx):
+    p = build_protocol(load_workbook_file(order_xlsx),
+                       "лигатурная, замена дуги верх 18х25 нити, явка 6 нед")
+    assert not any(r.check for r in p.rows)
 
 
 def test_new_elastic_option(order_xlsx_with):

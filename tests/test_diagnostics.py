@@ -55,7 +55,7 @@ def test_copy_event_has_diff(make_ctl, order_xlsx):
     ctl.copy(edited)
     ev = [e for e in events(ctl) if e["event"] == "copy"][-1]
     assert ev["edited"] is True and ev["raw"] == "лигатурная"
-    assert "-4 недели." in ev["diff"] and "+6 недель." in ev["diff"]
+    assert "-Явка на следующую активацию через 4 недели." in ev["diff"] and "+Явка на следующую активацию через 6 недель." in ev["diff"]
     assert ev["copied"] == edited
 
 
@@ -144,7 +144,7 @@ def test_mark_case_saved_even_if_diagnostics_off(make_ctl, order_xlsx):
     ev = [e for e in events(ctl) if e["event"] == "case"][-1]
     assert ev["kind"] == "program" and ev["kind_label"] == "Программа"
     assert ev["raw"] == "лигатурная, явка 6 нед" and ev["generated"] == gen
-    assert ev["corrected"] == fixed and "+8 недель." in ev["diff"]
+    assert ev["corrected"] == fixed and "+Явка на следующую активацию через 8 недель." in ev["diff"]
     assert ev["comment"] == "писал 6, а надо 8" and ev["corrected_raw"] is None
     assert ev["facts"]["weeks"] == 6 and ev["preset"]["name"] == "order"
     assert not ctl.diagnostics          # галочку не включили

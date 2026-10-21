@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from .methods import METHOD_LABELS
 from .parse import arches_in, extract_facts, parse_wire_from_label
+from .render import Row, render_rows
 from .text import norm, stem_in, word_stem
 from .workbook import Item, ReferenceCase, Workbook
 
@@ -39,13 +40,17 @@ _REQUIRED = {
 
 @dataclass
 class Protocol:
+    """lines — модель: по строке «код → текст пункта» на каждый выбранный пункт
+    (раздел, группа, вариант, отдельный пункт). rows — как это читается: группа
+    и вариант одной строкой, пометки «проверьте»."""
     lines: list[tuple[str, str]]
     warnings: list[str] = field(default_factory=list)
     defaults: list[str] = field(default_factory=list)
+    rows: list[Row] = field(default_factory=list)
 
     @property
     def text(self) -> str:
-        return '\n'.join(t for _, t in self.lines)
+        return '\n'.join(r.text for r in self.rows)
 
 
 @dataclass
@@ -160,10 +165,20 @@ class _Ctx:
         self.defaults: list[str] = []
         # пункты без вариантов, которые попали в протокол только по записи
         self.mentioned_singles: list[Item] = []
+        # «проверьте»: код группы/раздела → причины; current — группа, которую выбираем
+        self.flags: dict[str, list[str]] = {}
+        self.current: str | None = None
+
+    def flag(self, code: str, reason: str):
+        reasons = self.flags.setdefault(code, [])
+        if reason not in reasons:
+            reasons.append(reason)
 
     def warn(self, msg: str):
         if msg not in self.warnings:
             self.warnings.append(msg)
+        if self.current:                  # предупреждение про эту группу — её строка «проверьте»
+            self.flag(self.current, msg)
 
     def default(self, label: str):
         if label not in self.defaults:
@@ -232,7 +247,10 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
             ctx.warn('класс по сторонам (справа/слева) не поддерживается — '
                      'проверьте соотношение моляров и клыков')
         side = 'справа' if 'справа' in g else 'слева'
-        return _first(ch, lambda t: side in t and _class_in(t) == cls)
+        hit = _first(ch, lambda t: side in t and _class_in(t) == cls)
+        if hit and not re.search(r'справа|слева', ctx.n):
+            ctx.flag(group.id, 'сторона не указана — проставлены обе')
+        return hit
 
     if kind == 'wire':
         arch = _arch_of(group)
@@ -461,42 +479,6 @@ def _orphan_applies(item: Item, ctx: _Ctx) -> bool:
     return _best_by_words([item], ctx.n) is not None
 
 
-def _render_modes(wb: Workbook) -> dict[str, str]:
-    """Как эталоны выводят группу: join / separate / child_only."""
-    modes: dict[str, str] = {}
-    for case in wb.references:
-        texts = {code: norm(text) for code, text in case.lines if code}
-        for g in wb.items:
-            if not g.children or g.id in modes:
-                continue
-            if g.id in texts:
-                if texts[g.id] == norm(g.text):
-                    modes[g.id] = 'separate'
-                elif any(texts[g.id] == norm(g.text + ' ' + c.text) for c in g.children):
-                    modes[g.id] = 'join'
-            elif any(c.id in texts for c in g.children):
-                modes[g.id] = 'child_only'
-    return modes
-
-
-def _render(group: Item, sel, mode: str | None) -> list[tuple[str, str]]:
-    if isinstance(sel, list):                   # несколько вариантов или ни одного
-        if not sel:
-            return [(group.id, group.text)]
-        if mode == 'join':
-            return [(group.id, f'{group.text.rstrip()} {c.text}') for c in sel]
-        head = [] if mode == 'child_only' or (
-            mode is None and group.text.rstrip().endswith(':')) else [(group.id, group.text)]
-        return head + [(c.id, c.text) for c in sel]
-    if mode is None:
-        mode = 'child_only' if group.text.rstrip().endswith(':') else 'separate'
-    if mode == 'join':
-        return [(group.id, f'{group.text.rstrip()} {sel.text}')]
-    if mode == 'child_only':
-        return [(sel.id, sel.text)]
-    return [(group.id, group.text), (sel.id, sel.text)]
-
-
 def build_protocol(wb: Workbook, raw: str) -> Protocol:
     ctx = _Ctx(raw, wb)
     if ctx.f['system_type'] is None:
@@ -507,7 +489,6 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
         ctx.warn('класс: не указано, по молярам или по клыкам — допишите вручную')
     if ctx.f['wire_no_arch']:
         ctx.default('дуга на обеих челюстях (челюсть не указана)')
-    modes = _render_modes(wb)
     when = _effective_when(wb)
     singles = {it.id: (when[it.id] == 'always' or _single_mentioned(it, ctx))
                for s in wb.sections for it in s.children
@@ -518,7 +499,9 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
     for section in wb.sections:
         out: list[tuple[str, str]] = []
         if norm(section.text).startswith('жалоб'):
+            ctx.current = section.id
             sel = _select_complaint(section, ctx)
+            ctx.current = None
             if sel:
                 out.append((sel.id, sel.text))
         else:
@@ -526,7 +509,9 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
                 if item.children:
                     sel = _select_or_default(item, ctx)
                     if sel is not None:     # [] — группа упомянута, вариант не выбран
-                        out += _render(item, sel, modes.get(item.id))
+                        out.append((item.id, item.text))
+                        for c in (sel if isinstance(sel, list) else [sel]):
+                            out.append((c.id, c.text))
                 elif item.orphan:
                     if _orphan_applies(item, ctx):
                         out.append((item.id, item.text))
@@ -536,14 +521,22 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
             lines += [(section.id, section.text)] + out
     if ctx.f['wire_hint'] and not ctx.f['wires']:
         ctx.warn('дуга: упоминание не распознано — проверьте вручную')
-    return Protocol(lines, ctx.warnings, ctx.defaults)
+    return Protocol(lines, ctx.warnings, ctx.defaults, render_rows(wb, lines, ctx.flags))
 
 
 def _select_or_default(group: Item, ctx: _Ctx):
     """Выбор правилом; если врач не написал (правило ничего не выбрало или
     подставило своё «по умолчанию») — вариант по умолчанию из пресета."""
     n_def, n_warn = len(ctx.defaults), len(ctx.warnings)
-    sel = _select(group, ctx)
+    ctx.current = group.id
+    try:
+        sel = _select(group, ctx)
+    finally:
+        ctx.current = None
+    if sel and rule_kind(group) == 'wire' and ctx.f['wire_no_arch']:
+        ctx.flag(group.id, 'челюсть не указана — дуга на обеих')
+    if sel and rule_kind(group) is None:
+        ctx.flag(group.id, 'выбрано по словам записи — проверьте')
     target = group.default and next((c for c in group.children if c.id == group.default), None)
     if not target or len(ctx.warnings) > n_warn:
         return sel

@@ -46,3 +46,38 @@ def join_group(group_text: str, variant_text: str) -> str:
     else:
         out = f'{" ".join(g)} {variant}'
     return out if out[-1] in '.:!?' else out + '.'
+
+
+def render_rows(wb, lines: list[tuple[str, str]], flags: dict[str, list[str]]) -> list[Row]:
+    """Пункты протокола → строки: раздел — отдельно; группа + каждый её вариант —
+    одной строкой; группа без варианта — её текст; отдельный пункт — как есть."""
+    rows: list[Row] = []
+    i = 0
+    while i < len(lines):
+        code, text = lines[i]
+        it = wb.by_id.get(code)
+        if it is not None and it.level == 1:
+            rows.append(Row(text, (code,), section=True))
+            i += 1
+            continue
+        if it is not None and it.children:
+            j = i + 1
+            variants = []
+            while j < len(lines) and (v := wb.by_id.get(lines[j][0])) is not None \
+                    and v.parent == code and v in it.children:
+                variants.append(lines[j])
+                j += 1
+            if variants:
+                rows += [Row(join_group(text, vt), (code, vc)) for vc, vt in variants]
+            else:
+                rows.append(Row(' '.join(text.split()), (code,)))
+            i = j
+            continue
+        rows.append(Row(' '.join(text.split()), (code,)))
+        i += 1
+    for row in rows:
+        for c in row.codes:
+            for reason in flags.get(c, []):
+                if reason not in row.check:
+                    row.check.append(reason)
+    return rows
