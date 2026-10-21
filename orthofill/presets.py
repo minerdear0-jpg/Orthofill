@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .journal import Journal, _now
-from .workbook import DictEntry, Item, ReferenceCase, Workbook
+from .workbook import DictEntry, Item, ReferenceCase, Workbook, normalize_references
 
 
 @dataclass
@@ -119,11 +119,13 @@ class PresetStore:
         content = json.dumps(
             {'items': [[i.id, i.text, i.method, i.when, i.default, i.words] for i in items],
              'references': [[r.case_id, r.raw, r.lines] for r in refs]}, ensure_ascii=False)
-        return Workbook(path=None, sha256=hashlib.sha256(content.encode()).hexdigest(),
-                        items=items, by_id=by_id,
-                        sections=[it for it in items if it.level == 1],
-                        references=refs, problems=[], warnings=[],
-                        name=name, source=source or '', dictionary=dictionary)
+        wb = Workbook(path=None, sha256=hashlib.sha256(content.encode()).hexdigest(),
+                      items=items, by_id=by_id,
+                      sections=[it for it in items if it.level == 1],
+                      references=refs, problems=[], warnings=[],
+                      name=name, source=source or '', dictionary=dictionary)
+        normalize_references(wb)          # эталоны, сохранённые в 0.2 beta 1
+        return wb
 
     # ---------- эталоны, выгрузка ----------
     def add_reference(self, preset_id: int, raw: str, lines: list[tuple[str, str]]) -> str:

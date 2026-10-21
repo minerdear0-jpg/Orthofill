@@ -13,16 +13,6 @@ REF_RAW = ("активация, лигатурная,этап рабочий, к
            "на верху 18 25 нити. ношение эластиков перепел, явка через 4 недели. ")
 
 
-@pytest.fixture
-def clip():
-    return []
-
-
-@pytest.fixture
-def ctl(tmp_path, clip):
-    return Controller(Journal(tmp_path / "j.db"), clip.append)
-
-
 def test_layout_mode():
     assert layout_mode(899) == "narrow" and layout_mode(900) == "wide"
 

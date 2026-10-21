@@ -189,6 +189,9 @@ class Controller:
         results = check_references(wb)
         ok = sum(r.ok for r in results)
         for r in results:
+            if r.own_lines:
+                details.append(f'эталон {r.case_id}: свои строки врача — {r.own_lines} '
+                               f'(не проверяются)')
             if r.ok:
                 continue
             details.append(f'Не совпадает эталон {r.case_id}:')

@@ -50,3 +50,15 @@ def store(tmp_path):
     from orthofill.journal import Journal
     from orthofill.presets import PresetStore
     return PresetStore(Journal(tmp_path / "j.db"))
+
+
+@pytest.fixture
+def clip():
+    return []
+
+
+@pytest.fixture
+def ctl(tmp_path, clip):
+    from orthofill.controller import Controller
+    from orthofill.journal import Journal
+    return Controller(Journal(tmp_path / "j.db"), clip.append)

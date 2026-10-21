@@ -174,7 +174,7 @@ def load_workbook_file(path: str | Path) -> Workbook:
     dictionary = (_read_dictionary(book[DICTIONARY_SHEET])
                   if DICTIONARY_SHEET in book.sheetnames else [])
 
-    return Workbook(
+    wb = Workbook(
         path=path,
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         items=items,
@@ -187,6 +187,8 @@ def load_workbook_file(path: str | Path) -> Workbook:
         source=path.name,
         dictionary=dictionary,
     )
+    normalize_references(wb)
+    return wb
 
 
 def _split_words(value) -> list[str]:
@@ -240,27 +242,82 @@ def _ws_key(text: str) -> str:
     return ' '.join(text.split())
 
 
-def lines_for_reference(wb: Workbook, generated, final_text: str) -> list[tuple[str, str]]:
-    """Строки протокола, который врач оставил, → (код, текст) для колонок E/F.
+def _variant_join_text(group: Item, variant: Item) -> list[str]:
+    from .render import join_group
+    return [_ws_key(join_group(group.text, variant.text)),
+            _ws_key(f'{group.text} {variant.text}')]
 
-    Строка совпала с выданной программой → её код и текст; совпала с текстом
-    пункта классификатора → код пункта; своя строка врача → ('', текст)."""
-    unused = list(generated.lines)
+
+def normalize_references(wb: Workbook) -> None:
+    """Эталоны 0.1 → вид «по пунктам» (идемпотентно):
+    «2b | Тип системы вестибулярная лигатурная.» → группа 2b + вариант 2b2;
+    вариант без строки своей группы выше → строка группы вставляется."""
+    for case in wb.references:
+        out: list[tuple[str, str]] = []
+        for code, text in case.lines:
+            it = wb.by_id.get(code) if code else None
+            if it is not None and it.children and _ws_key(text) != _ws_key(it.text):
+                hit = next((c for c in it.children
+                            if _ws_key(text) in _variant_join_text(it, c)), None)
+                if hit is not None:
+                    out += [(it.id, it.text), (hit.id, hit.text)]
+                    continue
+            elif it is not None and it.level == 3 and not it.orphan and it.parent in wb.by_id:
+                if not out or out[-1][0] != it.parent:
+                    group = wb.by_id[it.parent]
+                    out.append((group.id, group.text))
+            out.append((code, text))
+        case.lines = out
+
+
+def lines_for_reference(wb: Workbook, generated, final_text: str) -> list[tuple[str, str]]:
+    """Строки, которые врач оставил в окне, → (код, текст пункта) для эталона.
+
+    Строка совпала с выданной строкой → коды этой строки (группа и вариант
+    отдельными строками); с текстом пункта → его код; со склейкой любой пары
+    группа + вариант → оба кода. Строка, которой врач заменил выданную строку
+    группы, → (код группы, текст врача): «его формулировка этого пункта».
+    Совсем своя строка → ('', текст)."""
+    import difflib
+
+    rows = list(generated.rows)
+    finals = [ln.strip() for ln in final_text.splitlines() if _ws_key(ln)]
     item_by_text: dict[str, Item] = {}
+    joined: dict[str, tuple[Item, Item]] = {}
     for it in wb.items:
         item_by_text.setdefault(_ws_key(it.text), it)
-    out = []
-    for line in final_text.splitlines():
+        for c in it.children:
+            for key in _variant_join_text(it, c):
+                joined.setdefault(key, (it, c))
+
+    def by_text(line: str) -> list[tuple[str, str]] | None:
         key = _ws_key(line)
-        if not key:
-            continue
-        hit = next((g for g in unused if _ws_key(g[1]) == key), None)
-        if hit:
-            unused.remove(hit)
-            out.append(hit)
-        elif key in item_by_text:
+        if key in joined:
+            g, c = joined[key]
+            return [(g.id, g.text), (c.id, c.text)]
+        if key in item_by_text:
             it = item_by_text[key]
-            out.append((it.id, it.text))
-        else:
-            out.append(('', line.strip()))
+            return [(it.id, it.text)]
+        return None
+
+    def row_lines(row) -> list[tuple[str, str]]:
+        return [(c, wb.by_id[c].text) for c in row.codes if c in wb.by_id]
+
+    out: list[tuple[str, str]] = []
+    sm = difflib.SequenceMatcher(None, [_ws_key(r.text) for r in rows],
+                                 [_ws_key(f) for f in finals], autojunk=False)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == 'equal':
+            for r in rows[i1:i2]:
+                out += row_lines(r)
+            continue
+        replaced = rows[i1:i2] if op == 'replace' else []
+        for k, line in enumerate(finals[j1:j2]):
+            known = by_text(line)
+            if known:
+                out += known
+            elif k < len(replaced) and len(replaced[k].codes) > 1:
+                out.append((replaced[k].codes[0], line))     # своя формулировка пункта
+            else:
+                out.append(('', line))
     return out

@@ -27,7 +27,8 @@ def test_references(order_xlsx):
     (case,) = load_workbook_file(order_xlsx).references
     assert case.case_id == '1' and case.raw.startswith('активация, лигатурная')
     assert case.lines[0] == ('1', 'Жалобы: активация')
-    assert ('2b', 'Тип системы вестибулярная лигатурная.') in case.lines
+    # эталон 0.1 со склеенной строкой переведён в «группа + вариант»
+    assert ('2b', 'Тип системы') in case.lines and ('2b2', 'вестибулярная лигатурная.') in case.lines
 
 
 def test_load_messy_codes(tmp_path):
@@ -82,12 +83,12 @@ def test_lines_for_reference_keeps_codes_and_marks_edits(order_xlsx):
     wb = load_workbook_file(order_xlsx)
     p = build_protocol(wb, "лигатурная, перепел")
     texts = p.text.splitlines()
-    i_ok = texts.index("Перепел")
-    texts[i_ok] = "  Перепел "                                  # пробелы — не правка
-    texts.insert(1, "на отклеивание брекета.")                  # текст пункта 1b
+    i_ok = texts.index("Назначены межчелюстные эластики: Перепел.")
+    texts[i_ok] = "  Назначены межчелюстные эластики:   Перепел. "  # пробелы — не правка
+    texts.insert(2, "на отклеивание брекета.")                 # текст пункта 1b
     texts.append("Дополнительно: беседа о гигиене.")            # своя строка врача
     lines = lines_for_reference(wb, p, "\n".join(texts))
-    assert ("4f1", "Перепел") in lines
+    assert ("4f", "Назначены межчелюстные эластики") in lines and ("4f1", "Перепел") in lines
     assert ("1b", "на отклеивание брекета.") in lines
     assert lines[-1] == ("", "Дополнительно: беседа о гигиене.")
 

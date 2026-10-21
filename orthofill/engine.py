@@ -59,6 +59,7 @@ class CaseResult:
     ok: bool
     missing: list[tuple[str, str]]
     extra: list[tuple[str, str]]
+    own_lines: int = 0              # строки врача, которые не проверяются
 
 
 def _guess_kind(group: Item) -> str | None:
@@ -552,12 +553,29 @@ def _key(line: tuple[str, str]) -> tuple[str, str]:
 
 
 def check_references(wb: Workbook) -> list[CaseResult]:
+    """Сверка по пунктам (кодам и их порядку), не по тексту. Строка эталона без
+    кода (своя строка врача) не проверяется; строка с кодом группы и своим
+    текстом — «формулировка врача»: подходит любой вариант этой группы."""
     results = []
     for case in wb.references:
-        got = [_key(x) for x in build_protocol(wb, case.raw).lines]
-        exp = [_key(x) for x in case.lines]
+        got = [c for c, _ in build_protocol(wb, case.raw).lines]
+        exp, own, free = [], 0, set()
+        for code, text in case.lines:
+            if not code:
+                own += 1
+                continue
+            it = wb.by_id.get(code)
+            if it is not None and it.children and ' '.join(text.split()) != ' '.join(it.text.split()):
+                own += 1
+                free.add(code)
+            exp.append(code)
+        if free:     # варианты групп с формулировкой врача не сравниваются
+            got = [c for c in got if not (c in wb.by_id and wb.by_id[c].parent in free
+                                          and wb.by_id[c].level == 3)]
+        text_of = lambda c: (c, wb.by_id[c].text if c in wb.by_id else '')  # noqa: E731
         results.append(CaseResult(
             case.case_id, got == exp,
-            missing=[x for x in exp if x not in got],
-            extra=[x for x in got if x not in exp]))
+            missing=[text_of(c) for c in exp if c not in got],
+            extra=[text_of(c) for c in got if c not in exp],
+            own_lines=own))
     return results

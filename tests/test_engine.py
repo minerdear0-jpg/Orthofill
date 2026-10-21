@@ -15,14 +15,14 @@ def test_reference_order_xlsx(order_xlsx):
     assert [r.ok for r in check_references(load_workbook_file(order_xlsx))] == [True]
 
 
-def test_reference_compares_text(order_xlsx):
+def test_reference_compares_codes(order_xlsx):
     wb = load_workbook_file(order_xlsx)
     case = wb.references[0]
     lines = list(case.lines)
-    lines[1] = (lines[1][0], 'другой текст')
+    lines[1] = ('1b', 'на отклеивание брекета.')      # другой пункт — расхождение
     wb.references = [ReferenceCase(case.case_id, case.raw, lines)]
     (res,) = check_references(wb)
-    assert not res.ok and ('1a', 'другой текст') in res.missing
+    assert not res.ok and ('1b', 'на отклеивание брекета.') in res.missing
 
 
 def test_text_is_plain(order_xlsx):
