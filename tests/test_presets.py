@@ -108,3 +108,25 @@ def test_migrates_v1_db(tmp_path):
     assert j.get_setting("last_file") == "C:/a.xlsx"
     j._db.execute("SELECT preset_id FROM entries")      # столбец появился
     Journal(db)                                          # повторное открытие не падает
+
+
+# ---------- 0.2 beta 3: словарь ----------
+def test_learn_unlearn_hits(store, order_xlsx):
+    pid = store.create(load_workbook_file(order_xlsx))
+    store.learn(pid, "  Торк ", "Изгиб третьего порядка", "4g3")
+    wb = store.load(pid)
+    assert [(e.word, e.item_text, e.code, e.hits) for e in wb.dictionary] == \
+           [("торк", "Изгиб третьего порядка", "4g3", 0)]
+    assert store.list()[0].dirty
+    store.count_hits(pid, ["торк"])
+    store.count_hits(pid, ["торк"])
+    assert store.load(pid).dictionary[0].hits == 2
+    store.unlearn(pid, "торк")
+    assert store.load(pid).dictionary == []
+
+
+def test_learn_same_word_replaces(store, order_xlsx):
+    pid = store.create(load_workbook_file(order_xlsx))
+    store.learn(pid, "торк", "Изгиб второго порядка", "4g2")
+    store.learn(pid, "ТОРК", "Изгиб третьего порядка", "4g3")
+    assert [(e.word, e.code) for e in store.load(pid).dictionary] == [("торк", "4g3")]

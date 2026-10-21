@@ -140,6 +140,29 @@ class PresetStore:
             db.execute('UPDATE presets SET dirty=1 WHERE id=?', (preset_id,))
         return case_id
 
+    # ---------- словарь врача ----------
+    @staticmethod
+    def norm_word(word: str) -> str:
+        from .text import norm
+        return ' '.join(norm(word).split())
+
+    def learn(self, preset_id: int, word: str, item_text: str, code: str) -> None:
+        with self._db:
+            self._db.execute('INSERT OR REPLACE INTO dictionary VALUES (?,?,?,?,?,0)',
+                             (preset_id, self.norm_word(word), item_text, code, _now()))
+            self._db.execute('UPDATE presets SET dirty=1 WHERE id=?', (preset_id,))
+
+    def unlearn(self, preset_id: int, word: str) -> None:
+        with self._db:
+            self._db.execute('DELETE FROM dictionary WHERE preset_id=? AND word=?',
+                             (preset_id, self.norm_word(word)))
+            self._db.execute('UPDATE presets SET dirty=1 WHERE id=?', (preset_id,))
+
+    def count_hits(self, preset_id: int, words: list[str]) -> None:
+        with self._db:
+            self._db.executemany('UPDATE dictionary SET hits = hits + 1 WHERE preset_id=? AND word=?',
+                                 [(preset_id, self.norm_word(w)) for w in words])
+
     def mark_exported(self, preset_id: int, file_name: str = '') -> None:
         with self._db:
             self._db.execute('UPDATE presets SET dirty=0 WHERE id=?', (preset_id,))
