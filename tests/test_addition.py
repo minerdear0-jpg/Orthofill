@@ -72,3 +72,14 @@ def test_insert_single_item(order_xlsx_with):
     wb = order_xlsx_with(("4o", "Подвязывание зуба короткой металлической лигатурой."))
     new, line = insert_item(wb, build_protocol(wb, "лигатурная").text, "4o")
     assert new.splitlines()[line] == "Подвязывание зуба короткой металлической лигатурой."
+
+
+def test_insert_in_preset_order(order_xlsx):
+    """Смоук 0.2b3: юстировка вставала в конец «Лечения», после динамики."""
+    wb = load_workbook_file(order_xlsx)
+    text = build_protocol(wb, "лигатурная, замена дуги верх 18х25 нити").text
+    new, line = insert_item(wb, text, "4g3")
+    out = new.splitlines()
+    dyn = next(i for i, ln in enumerate(out) if ln.startswith("Динамика лечения"))
+    wire = next(i for i, ln in enumerate(out) if ln.startswith("Смена дуги"))
+    assert wire < line < dyn

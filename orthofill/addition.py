@@ -95,9 +95,17 @@ def _row_text(item: Item, group: Item | None) -> str:
     return join_group(group.text, item.text) if group is not None else _ws(item.text)
 
 
+def _known_lines(wb: Workbook) -> dict[str, str]:
+    """Текст строки протокола → код пункта (вариант для склейки «группа + вариант»)."""
+    out: dict[str, str] = {}
+    for it, g in _choices(wb):
+        out.setdefault(_row_text(it, g), it.id)
+    return {_ws(k): v for k, v in out.items()}
+
+
 def insert_item(wb: Workbook, text: str, code: str) -> tuple[str, int]:
     """Вставить строку пункта в текст протокола → (новый текст, номер строки).
-    Строка встаёт в конец своего раздела; невправленая строка другого варианта
+    Строка встаёт в свой раздел по порядку пресета; невправленая строка другого варианта
     той же группы заменяется; нет заголовка раздела — раздел добавляется на
     своё место по порядку пресета."""
     item = wb.by_id[code]
@@ -116,8 +124,14 @@ def insert_item(wb: Workbook, text: str, code: str) -> tuple[str, int]:
                 if _ws(lines[i]) in siblings:
                     lines[i] = row
                     return '\n'.join(lines), i
-        lines.insert(end, row)
-        return '\n'.join(lines), end
+        # на своё место по порядку пресета: перед первой строкой раздела, чей пункт
+        # идёт позже; строки, которые врач переписал (не узнаются), пропускаются
+        order = {it.id: k for k, it in enumerate(wb.items)}
+        known = _known_lines(wb)
+        at = next((i for i in range(h + 1, end)
+                   if order.get(known.get(_ws(lines[i]), ''), -1) > order[code]), end)
+        lines.insert(at, row)
+        return '\n'.join(lines), at
 
     later = [s for s in wb.sections[wb.sections.index(section) + 1:]]
     at = next((i for i, ln in enumerate(lines)

@@ -1,6 +1,7 @@
 """Окно Orthofill: tkinter + тема sv-ttk (в стиле Windows 11)."""
 from __future__ import annotations
 
+import re
 import sys
 import tkinter as tk
 from pathlib import Path
@@ -140,11 +141,44 @@ class App:
                    command=self.generate).pack(side='left')
         ttk.Label(row, text='Ctrl+Enter', foreground=MUTED, padding=(8, 0)).pack(side='left')
         f, self.raw_txt = self._text(self.in_panel, 3)
+        # непонятые программой слова — подчёркнуты; нажатие — «добавить для слова»
+        self.raw_txt.tag_configure('unknown', underline=1, foreground=WARN_TEXT)
+        self.raw_txt.tag_configure('learned', underline=1, foreground='#1f7a3f')
+        self.raw_txt.tag_bind('unknown', '<Enter>', lambda e: (
+            self.raw_txt.configure(cursor='hand2'),
+            self.status_lbl.configure(text='Программа не поняла это слово — нажмите, '
+                                           'чтобы выбрать пункт')))
+        self.raw_txt.tag_bind('unknown', '<Leave>', lambda e: self.raw_txt.configure(cursor='xterm'))
+        self.raw_txt.tag_bind('unknown', '<Button-1>', self._on_unknown_click)
+        self.raw_txt.bind('<KeyRelease>', self._unmark_unknown, add='+')
         f.pack(fill='both', expand=True)
 
         self.out_panel = ttk.Frame(self.body)
         ttk.Label(self.out_panel, text='ПРОТОКОЛ (МОЖНО ПРАВИТЬ)', font=self.f_label,
                   foreground=MUTED).pack(anchor='w', pady=(0, 3))
+        # «Добавить пункт»: поиск по пресету, список — в той же панели (без всплывающих окон)
+        self.add_box = ttk.Frame(self.out_panel)
+        self.add_box.pack(fill='x', pady=(0, 4))
+        self.add_for = ttk.Frame(self.add_box)
+        self.add_for_lbl = ttk.Label(self.add_for, text='', foreground=WARN_TEXT)
+        self.add_for_lbl.pack(side='left')
+        ttk.Button(self.add_for, text='×', width=2,
+                   command=self._close_add).pack(side='left', padx=(6, 0))
+        row_add = ttk.Frame(self.add_box)
+        row_add.pack(fill='x')
+        ttk.Label(row_add, text='+ Добавить пункт:', foreground=MUTED).pack(side='left')
+        self.add_entry = ttk.Entry(row_add)
+        self.add_entry.pack(side='left', fill='x', expand=True, padx=(6, 0))
+        self.add_list = tk.Listbox(self.add_box, height=7, activestyle='dotbox',
+                                   font=self.f_small, exportselection=False)
+        self._hits = []
+        self._add_word: str | None = None
+        self.add_entry.bind('<KeyRelease>', self._on_add_key)
+        self.add_entry.bind('<Down>', lambda e: (self._move_hit(1), 'break')[1])
+        self.add_entry.bind('<Up>', lambda e: (self._move_hit(-1), 'break')[1])
+        self.add_entry.bind('<Return>', lambda e: (self._add_selected(None), 'break')[1])
+        self.add_entry.bind('<Escape>', lambda e: (self._close_add(), 'break')[1])
+        self.add_list.bind('<ButtonRelease-1>', lambda e: self._add_selected(None))
         row = ttk.Frame(self.out_panel)
         row.pack(side='bottom', fill='x', pady=(8, 0))
         self.out_row = row
@@ -175,6 +209,7 @@ class App:
         self.out_txt.tag_configure('first', spacing1=0)
         self.out_txt.tag_configure('check', lmargin1=10, lmargin2=10, lmargincolor=WARN_TEXT)
         self.out_txt.bind('<KeyRelease>', self._unmark_edited, add='+')
+        self.out_txt.tag_configure('added', background='#e3eef7')
 
         # Строка статуса
         st = ttk.Frame(r, padding=(12, 4, 12, 8))
@@ -190,12 +225,19 @@ class App:
         # появляется после смены пресета: вернуть прежний
         self.undo_btn = ttk.Button(line, text='Вернуть', command=self._undo_switch)
         self._undo_to: int | None = None
+        # «Отменить» запоминание слова
+        self.unlearn_btn = ttk.Button(line, text='Отменить', command=self._unlearn)
+        self._learned: str | None = None
+        # вопрос «Каким словом это было в записи?» — не блокирует
+        self.learn_bar = ttk.Frame(st)
+        self._learn_code: str | None = None
+        self._learn_cands: list[str] = []
         self.warn_lbl = ttk.Label(st, text='', foreground=WARN_TEXT, justify='left')
         self.warn_lbl.pack(anchor='w')
         self.def_lbl = ttk.Label(st, text='', foreground=MUTED, justify='left')
         self.def_lbl.pack(anchor='w')
         st.bind('<Configure>', lambda e: [w.configure(wraplength=max(200, e.width - 30))
-                                          for w in (self.warn_lbl, self.def_lbl)])
+                                          for w in (self.warn_lbl, self.def_lbl, self.status_lbl)])
 
         r.bind('<Configure>', self._on_resize)
         self._relayout('wide')
@@ -254,7 +296,7 @@ class App:
 
     # ---------- клавиши ----------
     def _bind_keys(self):
-        for w in (self.raw_txt, self.out_txt):
+        for w in (self.raw_txt, self.out_txt, self.add_entry):
             for seq in ('<Control-Return>', '<Control-KP_Enter>'):
                 w.bind(seq, lambda e: (self.generate(), 'break')[1])
         self.root.bind_all('<Control-KeyPress>', self._on_ctrl_key, add='+')
@@ -339,7 +381,8 @@ class App:
 
     def _status(self, text: str, warnings=(), defaults_line: str = '', ask_mark=False,
                 undo=False, rows=()):
-        self.status_lbl.configure(text=text)
+        self.status_lbl.configure(text=text, foreground='')
+        self.unlearn_btn.pack_forget()
         if undo:
             self.undo_btn.pack(side='left', padx=(12, 0))
         else:
@@ -516,6 +559,236 @@ class App:
         if r.copied:
             self._show_protocol(r.rows)
         self._status(r.status, r.warnings, r.defaults_line, rows=r.rows)
+        self._hide_learning()
+        self._close_add()
+        self._show_unknown(r.unknown)
+
+    # ---------- непонятые слова ----------
+    def _show_unknown(self, spans):
+        t = self.raw_txt
+        for tag in ('unknown', 'learned'):
+            t.tag_remove(tag, '1.0', 'end')
+        for s, e, _ in spans:
+            t.tag_add('unknown', f'1.0+{s}c', f'1.0+{e}c')
+
+    def _unmark_unknown(self, e):
+        """Правка слова снимает подчёркивание только с него."""
+        t = self.raw_txt
+        for at in ('insert', 'insert-1c'):
+            if 'unknown' in t.tag_names(at):
+                t.tag_remove('unknown', f'{at} wordstart', f'{at} wordend')
+
+    def _on_unknown_click(self, e):
+        t = self.raw_txt
+        at = t.index(f'@{e.x},{e.y}')
+        rng = t.tag_prevrange('unknown', f'{at}+1c')
+        if rng:
+            self._open_add_for_word(t.get(*rng))
+
+    # ---------- «Добавить пункт» ----------
+    def _open_add_for_word(self, word: str):
+        self._add_word = word
+        self.add_for_lbl.configure(text=f'Для слова «{word}» — выберите пункт:')
+        self.add_for.pack(fill='x', before=self.add_box.winfo_children()[1])
+        self.add_entry.delete(0, 'end')
+        self.add_entry.focus_set()
+        self._on_add_query()
+
+    def _close_add(self):
+        self._add_word = None
+        self.add_for.pack_forget()
+        self.add_list.pack_forget()
+        self.add_entry.delete(0, 'end')
+        self._hits = []
+
+    def _on_add_key(self, e):
+        if e.keysym not in ('Up', 'Down', 'Return', 'KP_Enter', 'Escape'):
+            self._on_add_query()
+
+    def _on_add_query(self):
+        q = self.add_entry.get()
+        self._hits = self.ctl.search(q) if (q.strip() or self._add_word) else []
+        lb = self.add_list
+        lb.delete(0, 'end')
+        for h in self._hits:
+            lb.insert('end', f'{h.label}   —   {h.where}')
+        if self._hits:
+            lb.configure(height=min(7, len(self._hits)))
+            lb.selection_clear(0, 'end')
+            lb.selection_set(0)
+            lb.pack(fill='x', pady=(2, 0))
+        else:
+            lb.pack_forget()
+
+    def _move_hit(self, step: int):
+        if not self._hits:
+            return
+        cur = self.add_list.curselection()
+        i = max(0, min(len(self._hits) - 1, (cur[0] if cur else -1) + step))
+        self.add_list.selection_clear(0, 'end')
+        self.add_list.selection_set(i)
+        self.add_list.see(i)
+
+    def _add_selected(self, index):
+        if index is None:
+            cur = self.add_list.curselection()
+            index = cur[0] if cur else 0
+        if not self._hits or self.ctl.workbook is None:
+            return
+        hit = self._hits[index]
+        word = self._add_word
+        old = self.out_txt.get('1.0', 'end-1c')
+        res = self.ctl.add_item(old, hit.code, word=word)
+        self._apply_added(old, res.text, res.line)
+        self._close_add()
+        self._status(res.status)
+        if res.learned:
+            self._show_learned(word)
+        else:
+            self._ask_learning(res.code, res.candidates)
+
+    def _apply_added(self, old: str, new: str, line: int):
+        """Вставить/заменить строки в поле, не трогая остальной текст и его теги."""
+        t = self.out_txt
+        old_lines, new_lines = old.splitlines(), new.splitlines()
+        diff = len(new_lines) - len(old_lines)
+        if diff == 0:
+            t.delete(f'{line + 1}.0', f'{line + 1}.end')
+            t.insert(f'{line + 1}.0', new_lines[line])
+        else:
+            start = line - diff + 1
+            block = '\n'.join(new_lines[start:line + 1])
+            if start < len(old_lines):
+                t.insert(f'{start + 1}.0', block + '\n')
+            else:
+                t.insert('end', ('\n' if old_lines else '') + block)
+            heads = {' '.join(s.text.split()) for s in self.ctl.workbook.sections}
+            for k in range(start, line + 1):
+                if ' '.join(new_lines[k].split()) in heads:
+                    t.tag_add('section', f'{k + 1}.0', f'{k + 1}.end')
+        for tag in ('check', 'section'):
+            if tag == 'check' or ' '.join(new_lines[line].split()) not in {
+                    ' '.join(s.text.split()) for s in self.ctl.workbook.sections}:
+                t.tag_remove(tag, f'{line + 1}.0', f'{line + 1}.end+1c')
+        t.tag_add('added', f'{line + 1}.0', f'{line + 1}.end')
+        t.see(f'{line + 1}.0')
+        self.root.after(3000, lambda: t.tag_remove('added', '1.0', 'end'))
+        self.ctl._last_shown = new
+
+    # ---------- вопрос «каким словом» ----------
+    def learn_text(self) -> str:
+        if not self.learn_bar.winfo_manager():
+            return ''
+        return ' '.join(w.cget('text') for w in self.learn_bar.winfo_children()
+                        if isinstance(w, (ttk.Label, ttk.Button)))
+
+    def _hide_learning(self):
+        for w in self.learn_bar.winfo_children():
+            w.destroy()
+        self.learn_bar.pack_forget()
+        self._learn_code = None
+
+    def _ask_learning(self, code: str, candidates: list[str]):
+        self._hide_learning()
+        self._learn_code, self._learn_cands = code, candidates
+        bar = self.learn_bar
+        if candidates:
+            ttk.Label(bar, text=f'Это было «{candidates[0]}»?').pack(side='left')
+            ttk.Button(bar, text='Да', style='Accent.TButton',
+                       command=self._learn_yes).pack(side='left', padx=(8, 0))
+            ttk.Button(bar, text='Другое слово…',
+                       command=self._show_chips).pack(side='left', padx=(6, 0))
+        else:
+            ttk.Label(bar, text='Каким словом это было в записи?').pack(side='left')
+            self._add_chips(bar)
+        ttk.Button(bar, text='Пропустить', command=self._skip_learning).pack(side='left', padx=(6, 0))
+        bar.pack(anchor='w', fill='x', pady=(4, 0), after=self.status_lbl.master)
+
+    def _note_words(self) -> list[str]:
+        raw = self.raw_txt.get('1.0', 'end-1c')
+        out = []
+        for w in re.findall(r'[^\s,;:.()«»"!?]+', raw):
+            if w not in out:
+                out.append(w)
+        return out
+
+    def _add_chips(self, bar, show_all=False):
+        words = self._note_words()
+        if self.mode == 'narrow' and not show_all and len(words) > 6:
+            words, more = words[-6:], True
+        else:
+            more = False
+        for w in words:
+            ttk.Button(bar, text=w, style='Toolbutton',
+                       command=lambda w=w: self._learn(w)).pack(side='left', padx=(4, 0))
+        if more:
+            ttk.Button(bar, text='ещё…', style='Toolbutton',
+                       command=lambda: self._rebuild_chips(True)).pack(side='left', padx=(4, 0))
+        ttk.Button(bar, text='Запомнить выделенное',
+                   command=self._learn_selection).pack(side='left', padx=(8, 0))
+
+    def _rebuild_chips(self, show_all):
+        code = self._learn_code
+        self._hide_learning()
+        self._learn_code = code
+        ttk.Label(self.learn_bar, text='Каким словом это было в записи?').pack(side='left')
+        self._add_chips(self.learn_bar, show_all)
+        ttk.Button(self.learn_bar, text='Пропустить',
+                   command=self._skip_learning).pack(side='left', padx=(6, 0))
+        self.learn_bar.pack(anchor='w', fill='x', pady=(4, 0), after=self.status_lbl.master)
+
+    def _show_chips(self):
+        self._rebuild_chips(False)
+
+    def _learn_yes(self):
+        if self._learn_cands:
+            self._learn(self._learn_cands[0])
+
+    def _learn_selection(self):
+        try:
+            word = self.raw_txt.get('sel.first', 'sel.last')
+        except tk.TclError:
+            self._status('Выделите слово или фразу в записи')
+            return
+        self._learn(word)
+
+    def _learn(self, word: str):
+        code = self._learn_code
+        if code is None:
+            return
+        msg = self.ctl.learn(word, code)
+        self._hide_learning()
+        self._status(msg)
+        if msg != 'Выберите слово':
+            self._show_learned(word)
+
+    def _show_learned(self, word: str):
+        """Подсветить выученное слово в записи и дать «Отменить»."""
+        t = self.raw_txt
+        start = '1.0'
+        while True:
+            at = t.search(word, start, 'end', nocase=True)
+            if not at:
+                break
+            end = f'{at}+{len(word)}c'
+            t.tag_remove('unknown', at, end)
+            t.tag_add('learned', at, end)
+            start = end
+        self._learned = word
+        if self.ctl.last_learn_broke:
+            self.status_lbl.configure(foreground=WARN_TEXT)
+        self.unlearn_btn.pack(side='left', padx=(12, 0))
+
+    def _unlearn(self):
+        if self._learned:
+            self._status(self.ctl.unlearn(self._learned))
+            self.raw_txt.tag_remove('learned', '1.0', 'end')
+            self._learned = None
+
+    def _skip_learning(self):
+        if self._learn_code:
+            self.ctl.skip_learning(self._learn_code)
+        self._hide_learning()
 
     def copy(self):
         text = self.out_txt.get('1.0', 'end-1c').strip()
