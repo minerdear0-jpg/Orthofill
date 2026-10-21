@@ -561,7 +561,9 @@ class App:
         self._status(r.status, r.warnings, r.defaults_line, rows=r.rows)
         self._hide_learning()
         self._close_add()
-        self._show_unknown(r.unknown)
+        self._show_unknown([])
+        if r.copied:      # подчёркивание — после показа протокола, Ctrl+Enter не ждёт
+            self.root.after_idle(lambda: self._show_unknown(self.ctl.find_unknown()))
 
     # ---------- непонятые слова ----------
     def _show_unknown(self, spans):
@@ -572,7 +574,14 @@ class App:
             t.tag_add('unknown', f'1.0+{s}c', f'1.0+{e}c')
 
     def _unmark_unknown(self, e):
-        """Правка слова снимает подчёркивание только с него."""
+        """Правка слова снимает подчёркивание только с него. Врач печатает в записи —
+        режим «Для слова …» отменяется (щелчок мог быть просто чтобы поправить опечатку)."""
+        if e.keysym in ('Up', 'Down', 'Left', 'Right', 'Home', 'End', 'Prior', 'Next',
+                        'Shift_L', 'Shift_R', 'Control_L', 'Control_R', 'Alt_L', 'Alt_R',
+                        'ISO_Next_Group', 'Caps_Lock', 'Escape', 'Tab'):
+            return
+        if self._add_word is not None:
+            self._close_add()
         t = self.raw_txt
         for at in ('insert', 'insert-1c'):
             if 'unknown' in t.tag_names(at):
@@ -591,7 +600,8 @@ class App:
         self.add_for_lbl.configure(text=f'Для слова «{word}» — выберите пункт:')
         self.add_for.pack(fill='x', before=self.add_box.winfo_children()[1])
         self.add_entry.delete(0, 'end')
-        self.add_entry.focus_set()
+        # после щелчка Text сам забирает фокус — переводим его, когда щелчок обработан
+        self.root.after_idle(self.add_entry.focus_set)
         self._on_add_query()
 
     def _close_add(self):
@@ -641,6 +651,7 @@ class App:
         res = self.ctl.add_item(old, hit.code, word=word)
         self._apply_added(old, res.text, res.line)
         self._close_add()
+        self._show_file_status()
         self._status(res.status)
         if res.learned:
             self._show_learned(word)
@@ -705,9 +716,14 @@ class App:
         bar.pack(anchor='w', fill='x', pady=(4, 0), after=self.status_lbl.master)
 
     def _note_words(self) -> list[str]:
+        from .text import norm
+        from .vocab import SERVICE
         raw = self.raw_txt.get('1.0', 'end-1c')
         out = []
         for w in re.findall(r'[^\s,;:.()«»"!?]+', raw):
+            n = norm(w)
+            if not re.search(r'[а-яa-z]', n) or re.search(r'\d', n) or n in SERVICE:
+                continue          # числа, тире, «на», «и» — учить им бессмысленно и опасно
             if w not in out:
                 out.append(w)
         return out
@@ -758,6 +774,7 @@ class App:
             return
         msg = self.ctl.learn(word, code)
         self._hide_learning()
+        self._show_file_status()
         self._status(msg)
         if msg != 'Выберите слово':
             self._show_learned(word)
@@ -782,6 +799,7 @@ class App:
     def _unlearn(self):
         if self._learned:
             self._status(self.ctl.unlearn(self._learned))
+            self._show_file_status()
             self.raw_txt.tag_remove('learned', '1.0', 'end')
             self._learned = None
 

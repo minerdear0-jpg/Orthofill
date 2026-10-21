@@ -441,6 +441,9 @@ def _select_new_group(group: Item, ctx: _Ctx) -> list[Item] | Item | None:
 
 def _select_complaint(section: Item, ctx: _Ctx) -> Item | None:
     ch, n = section.children, ctx.n
+    taught = next((c for c in ch if c.id in ctx.forced_singles), None)
+    if taught is not None:              # слово врача — раньше правил
+        return taught
     known = [
         (r'отклеи|отвалил|отпал', 'отклеива'),
         (r'выход\w*\s+дуг|дуг\w*\s+выш|выскоч', 'выход'),
@@ -478,41 +481,63 @@ def _cancelled(n: str, stem_rx: str) -> bool:
     return any(_negated_at(n, m.start(), m.end()) for m in re.finditer(stem_rx, n))
 
 
+_SEP = r'\s*[xх×*/\-]\s*'
+
+
 def _phrase_rx(phrase: str) -> str:
-    """Слова врача → шаблон: слова по основам, сечение «18х25» — с любым знаком."""
+    """Слова врача → шаблон. Короткие слова (до 4 букв) и числа — только целиком
+    («гиг» не срабатывает внутри «гигиена», «явка 6» — внутри «явка 60»);
+    длинные — по основе с коротким окончанием («квакозябры»); сечение «18х25» —
+    с любым знаком и пробелами («18 * 25»)."""
     parts = []
     for w in norm(phrase).split():
         if re.search(r'\d', w):
-            parts.append(r'[xх×*/\-]'.join(re.escape(x) for x in re.split(r'[xх×*/\-]', w)))
+            nums = [x for x in re.split(r'[xх×*/\-]', w) if x]
+            parts.append(_SEP.join(re.escape(x) for x in nums) + r'(?![0-9])')
+        elif len(w) <= 4:
+            parts.append(re.escape(w) + r'(?![а-яa-z0-9])')
         else:
-            parts.append(re.escape(word_stem(w)) + r'[^\s,.;:]*')
+            parts.append(re.escape(word_stem(w)) + r'[а-яa-z]{0,4}(?![а-яa-z0-9])')
     return r'(?<![а-яa-z0-9])' + r'[\s,.;:]+'.join(parts)
 
 
+def _dictionary_item(wb: Workbook, e, by_text: dict[str, list[Item]]) -> Item | None:
+    """Пункт слова: по коду, если текст тот же; иначе по тексту, только если такой
+    текст в пресете один («на верхней челюсти.» есть у нескольких групп)."""
+    text = ' '.join(e.item_text.split())
+    it = wb.by_id.get(e.code) if e.code else None
+    if it is not None and ' '.join(it.text.split()) == text:
+        return it
+    same = by_text.get(text, [])
+    return same[0] if len(same) == 1 else None
+
+
 def _apply_dictionary(wb: Workbook, ctx: _Ctx) -> None:
-    """Слова врача — раньше правил: вариант своей группы или отдельный пункт."""
-    by_text: dict[str, Item] = {}
+    """Слова врача — раньше правил: вариант своей группы или отдельный пункт.
+    Несколько слов на одну группу — берётся первое по записи."""
+    by_text: dict[str, list[Item]] = {}
     for it in wb.items:
-        by_text.setdefault(' '.join(it.text.split()), it)
-    found: dict[str, int] = {}
+        by_text.setdefault(' '.join(it.text.split()), []).append(it)
+    hits = []
     for e in wb.dictionary:
         m = next((m for m in re.finditer(_phrase_rx(e.word), ctx.n)
                   if not _negated_at(ctx.n, m.start(), m.end())), None)
         if m is None:
             continue
-        it = by_text.get(' '.join(e.item_text.split()))
+        it = _dictionary_item(wb, e, by_text)
         if it is None:
             ctx.warn(f'слово «{e.word}» больше не находит пункт')
             continue
-        ctx.dictionary_hits.append(e.word)
+        hits.append((m.start(), e.word, it))
+    for _, word, it in sorted(hits, key=lambda h: h[0]):
+        ctx.dictionary_hits.append(word)
         group = wb.by_id.get(it.parent) if it.level == 3 and not it.orphan else None
-        if group is not None:
-            if group.id in ctx.forced and found[group.id] <= m.start():
-                ctx.warn(f'«{group.text.strip()}»: несколько слов врача — взято первое по записи')
-                continue
-            ctx.forced[group.id], found[group.id] = it, m.start()
-        else:
+        if group is None:
             ctx.forced_singles.add(it.id)
+        elif group.id in ctx.forced:
+            ctx.warn(f'«{group.text.strip()}»: несколько слов врача — взято первое по записи')
+        else:
+            ctx.forced[group.id] = it
 
 
 def _orphan_applies(item: Item, ctx: _Ctx) -> bool:
@@ -560,7 +585,7 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
                         for c in (sel if isinstance(sel, list) else [sel]):
                             out.append((c.id, c.text))
                 elif item.orphan:
-                    if _orphan_applies(item, ctx):
+                    if item.id in ctx.forced_singles or _orphan_applies(item, ctx):
                         out.append((item.id, item.text))
                 elif singles.get(item.id):
                     out.append((item.id, item.text))

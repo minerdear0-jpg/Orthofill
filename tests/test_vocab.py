@@ -45,3 +45,25 @@ def test_real_notes_have_no_false_unknowns(tmp_path, data, case):
     wb = load_workbook_file(dst)
     wb.dictionary = [DictEntry(w, t, "") for w, t in data.get("dictionary", [])]
     assert [w for *_, w in unknown_words(wb, case["raw"])] == case.get("unknown", [])
+
+
+def test_short_preset_stems_do_not_hide_words(order_xlsx):
+    """I3: «приклеен», «треснул», «слетела» не прячутся за «при», «тре», «сле»."""
+    wb = load_workbook_file(order_xlsx)
+    words = [w for *_, w in unknown_words(wb, "лигатурная, приклеен, треснул, слетела")]
+    assert words == ["приклеен", "треснул", "слетела"]
+    assert unknown_words(wb, "активация, лигатурная, гигиена удовлетворительная") == []
+
+
+def test_reuses_given_signature(order_xlsx, monkeypatch):
+    """I5: подпись протокола из generate не пересчитывается."""
+    import orthofill.vocab as v
+    from orthofill.engine import build_protocol
+    wb = load_workbook_file(order_xlsx)
+    raw = "лигатурная, квакозябра"
+    base = v.signature(build_protocol(wb, raw))
+    calls = []
+    real = v.build_protocol
+    monkeypatch.setattr(v, "build_protocol", lambda *a: (calls.append(1), real(*a))[1])
+    assert [w for *_, w in v.unknown_words(wb, raw, base)] == ["квакозябра"]
+    assert len(calls) == 1                         # только для одной группы слов

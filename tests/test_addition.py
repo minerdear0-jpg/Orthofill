@@ -83,3 +83,32 @@ def test_insert_in_preset_order(order_xlsx):
     dyn = next(i for i, ln in enumerate(out) if ln.startswith("Динамика лечения"))
     wire = next(i for i, ln in enumerate(out) if ln.startswith("Смена дуги"))
     assert wire < line < dyn
+
+
+# ---------- итоговое ревью 0.2b3 ----------
+def test_insert_existing_item_is_not_duplicated(order_xlsx):
+    wb = load_workbook_file(order_xlsx)
+    text = build_protocol(wb, "лигатурная").text
+    new, line = insert_item(wb, text, "4a")
+    assert new == text and text.splitlines()[line] == "осмотр."
+
+
+def test_insert_tolerant_header(order_xlsx):
+    wb = load_workbook_file(order_xlsx)
+    text = build_protocol(wb, "лигатурная").text.replace("Лечение:\nосмотр.", "Лечение: осмотр.")
+    new, _ = insert_item(wb, text, "4g3")
+    assert new.count("Лечение") == 1 and "Юстировка дуги: Изгиб третьего порядка." in new
+
+
+def test_insert_replaces_sibling_without_header(order_xlsx):
+    wb = load_workbook_file(order_xlsx)
+    text = build_protocol(wb, "лигатурная").text.replace("Рекомендации:\n", "")
+    new, _ = insert_item(wb, text, "5d4")
+    assert "через 4 недели." not in new and "через 8 недель." in new
+
+
+def test_search_wire_like_doctor_writes(order_xlsx):
+    """I6: «18х25 тма», «16 niti» находят дуги."""
+    wb = load_workbook_file(order_xlsx)
+    assert search_items(wb, "18х25 тма")[0].code in ("4b16", "4c16")
+    assert {h.code for h in search_items(wb, "16 niti")} >= {"4b2", "4c2"}

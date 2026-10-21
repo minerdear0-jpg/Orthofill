@@ -45,6 +45,7 @@ def _gen(app, raw):
     app.raw_txt.insert("1.0", raw)
     app.out_txt.delete("1.0", "end")
     app.generate()
+    app.root.update()                     # подчёркивание — after_idle
 
 
 def _marked(t):
@@ -167,3 +168,22 @@ def test_ctrl_enter_not_eaten_by_add_entry(app):
     app.add_entry.focus_force()
     app.add_entry.event_generate("<Control-Return>", when="now")
     assert app.out_txt.get("1.0", "end-1c").startswith("Жалобы")
+
+
+# ---------- итоговое ревью 0.2b3 ----------
+def test_typing_in_note_cancels_add_for_word(app):
+    """I1: щелчок по слову для правки опечатки не должен потом молча учить."""
+    _gen(app, "лигатурная, квакозябра")
+    app._open_add_for_word("квакозябра")
+    app.root.update()
+    app.raw_txt.focus_force()
+    app.raw_txt.insert("end", "х")
+    app.raw_txt.event_generate("<KeyRelease>", keysym="x", when="now")
+    assert app._add_word is None
+
+
+def test_chips_skip_numbers_and_service(app):
+    _gen(app, "лигатурная, явка через 6 нед - 13-23 на верхней")
+    words = app._note_words()
+    assert "6" not in words and "-" not in words and "на" not in words and "13-23" not in words
+    assert "лигатурная" in words

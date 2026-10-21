@@ -13,8 +13,8 @@ import traceback
 from .diag import DiagLog, text_diff
 from .engine import Protocol, build_protocol, check_references, rule_warnings
 from .parse import extract_facts
-from .vocab import unknown_words
-from .addition import SearchHit, insert_item, search_items
+from .vocab import signature, unknown_words
+from .addition import SearchHit, insert_item, row_text, search_items
 from .journal import Journal
 from .presets import PresetStore
 from .workbook import Workbook, WorkbookError, lines_for_reference, load_workbook_file
@@ -261,30 +261,41 @@ class Controller:
             for e in self.workbook.dictionary:
                 if e.word in p.dictionary_hits:
                     e.hits += 1
-        try:
-            unknown = unknown_words(self.workbook, raw)
-        except Exception as e:      # подчёркивание — подсказка, протокол важнее
-            self._log_error('unknown_words', e)
-            unknown = []
+        self._last_sig = signature(p)       # для подчёркивания — считается потом (find_unknown)
         if self.diagnostics:
             facts = extract_facts(raw)
             self._log('generate', entry_id=self.last_entry_id, raw=raw,
                       raw_norm=facts['raw_norm'], facts=facts,
                       lines=p.lines, warnings=p.warnings, defaults=p.defaults,
                       preset=self._preset_ref(), sha256=self.workbook.sha256,
-                      dictionary_hits=p.dictionary_hits, unknown_words=[w for *_, w in unknown])
+                      dictionary_hits=p.dictionary_hits)
         defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
         status = 'Скопировано в буфер' if copy else 'Протокол пересобран (в буфер не копировался)'
-        return GenerateResult(p.text, status, p.warnings, defaults, copy, p.rows, unknown)
+        return GenerateResult(p.text, status, p.warnings, defaults, copy, p.rows)
 
     # ---------- «Добавить пункт» и словарь врача ----------
     def search(self, query: str) -> list[SearchHit]:
         return search_items(self.workbook, query) if self.workbook else []
 
+    def find_unknown(self) -> list[tuple[int, int, str]]:
+        """Непонятые слова последней записи (самопроверка). Отдельно от generate:
+        окно вызывает это после показа протокола — Ctrl+Enter не ждёт."""
+        if self.workbook is None or self.last_protocol is None:
+            return []
+        try:
+            found = unknown_words(self.workbook, self._last_raw, getattr(self, '_last_sig', None))
+        except Exception as e:      # подчёркивание — подсказка, протокол важнее
+            self._log_error('unknown_words', e)
+            return []
+        self._log('unknown', entry_id=self.last_entry_id, words=[w for *_, w in found])
+        return found
+
     def word_candidates(self, raw: str) -> list[str]:
         """Непонятые слова записи — последнее написанное первым."""
         out = []
-        for *_, w in reversed(unknown_words(self.workbook, raw)):
+        found = (self.find_unknown() if raw.strip() == self._last_raw.strip()
+                 else unknown_words(self.workbook, raw))
+        for *_, w in reversed(found):
             if w not in out:
                 out.append(w)
         return out
@@ -294,12 +305,20 @@ class Controller:
         word — подчёркнутое слово, с которого начали: оно запоминается сразу."""
         wb = self.workbook
         new, line = insert_item(wb, current_text, code)
-        replaced = new.count('\n') == current_text.count('\n')
-        self.copy(new)
         item = wb.by_id[code]
+        group = wb.by_id.get(item.parent) if item.level == 3 and not item.orphan else None
+        label = row_text(item, group)
+        if new == current_text:
+            status = f'«{label}» уже в протоколе'
+            if word:
+                status += '. ' + self.learn(word, code)
+            return AddResult(new, line, status, code, [],
+                             self.presets.norm_word(_clean_word(word)) if word else None)
+        replaced = len(new.splitlines()) == len(current_text.splitlines())
+        self.copy(new)
         section = wb.by_id.get(code[0])
         where = section.text.strip().rstrip(':') if section else ''
-        status = f'✓ Добавлено: {item.text.strip()} → {where}. Протокол скопирован.'
+        status = f'✓ Добавлено: {label} → {where}. Протокол скопирован.'
         self._log('add_item', code=code, text=item.text, replaced=replaced, word=word,
                   raw=self._last_raw, preset=self._preset_ref())
         learned = None
@@ -314,6 +333,7 @@ class Controller:
         if not w:
             return 'Выберите слово'
         item = self.workbook.by_id[code]
+        group = self.workbook.by_id.get(item.parent) if item.level == 3 and not item.orphan else None
         before = {r.case_id: r.ok for r in check_references(self.workbook)}
         self.presets.learn(self.preset_id, w, item.text, code)
         self._reload()
@@ -324,7 +344,7 @@ class Controller:
         if self.last_learn_broke:
             nums = ', '.join(self.last_learn_broke)
             return f'Запомнено «{w}», но после этого не совпадает эталон {nums} — проверьте или отмените'
-        return f'Запомнено: «{w}» → {item.text.strip()}'
+        return f'Запомнено: «{w}» → {row_text(item, group)}'
 
     def unlearn(self, word: str) -> str:
         w = self.presets.norm_word(_clean_word(word))

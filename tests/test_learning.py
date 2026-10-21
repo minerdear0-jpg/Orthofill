@@ -5,14 +5,15 @@ def test_add_learn_then_recognized(ctl, clip, order_xlsx):
     ctl.import_xlsx(order_xlsx)
     raw = "лигатурная, изгиб 12 зуб квакозябра"
     r = ctl.generate(raw)
-    assert [w for *_, w in r.unknown] == ["квакозябра"]
+    assert [w for *_, w in ctl.find_unknown()] == ["квакозябра"]
     res = ctl.add_item(r.text, "4g3")
     assert "Юстировка дуги: Изгиб третьего порядка." in res.text and clip[-1] == res.text
     assert res.candidates == ["квакозябра"] and res.learned is None
-    assert ctl.learn("квакозябра", "4g3") == "Запомнено: «квакозябра» → Изгиб третьего порядка"
+    assert ctl.learn("квакозябра", "4g3") == "Запомнено: «квакозябра» → Юстировка дуги: Изгиб третьего порядка."
     ctl.generate(raw)
     assert "4g3" in [c for c, _ in ctl.last_protocol.lines]
-    assert ctl.generate(raw).unknown == []
+    ctl.generate(raw)
+    assert ctl.find_unknown() == []
 
 
 def test_add_for_word_learns_in_one_step(ctl, order_xlsx):
@@ -68,3 +69,30 @@ def test_learning_marks_preset_dirty(ctl, order_xlsx):
 def test_word_candidates_last_first(ctl, order_xlsx):
     ctl.import_xlsx(order_xlsx)
     assert ctl.word_candidates("лигатурная, квакозябра, бармаглот") == ["бармаглот", "квакозябра"]
+
+
+# ---------- итоговое ревью 0.2b3 ----------
+def test_generate_does_not_compute_unknown(ctl, order_xlsx, monkeypatch):
+    """I5: подчёркивание считается отдельно, после показа протокола."""
+    import orthofill.controller as cmod
+    ctl.import_xlsx(order_xlsx)
+    monkeypatch.setattr(cmod, "unknown_words", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    assert ctl.generate("лигатурная, квакозябра").copied
+
+
+def test_find_unknown_after_generate(ctl, order_xlsx):
+    ctl.import_xlsx(order_xlsx)
+    ctl.generate("лигатурная, квакозябра")
+    assert [w for *_, w in ctl.find_unknown()] == ["квакозябра"]
+
+
+def test_add_existing_item_says_already(ctl, order_xlsx):
+    ctl.import_xlsx(order_xlsx)
+    res = ctl.add_item(ctl.generate("лигатурная").text, "4a")
+    assert "уже в протоколе" in res.status
+
+
+def test_status_names_group(ctl, order_xlsx):
+    ctl.import_xlsx(order_xlsx)
+    res = ctl.add_item(ctl.generate("лигатурная").text, "4d1")
+    assert "Смена одиночных эластических лигатур" in res.status

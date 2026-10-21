@@ -205,6 +205,7 @@ def test_learning_events(make_ctl, order_xlsx):
     ctl.set_diagnostics(True)
     ctl.import_xlsx(order_xlsx)
     r = ctl.generate("лигатурная, квакозябра")
+    ctl.find_unknown()
     ctl.add_item(r.text, "4g3")
     ctl.skip_learning("4g3")
     ctl.learn("квакозябра", "4g3")
@@ -212,4 +213,5 @@ def test_learning_events(make_ctl, order_xlsx):
     names = [e["event"] for e in events(ctl)]
     assert {"add_item", "learn_skip", "learn", "learn_undo"} <= set(names)
     gen = [e for e in events(ctl) if e["event"] == "generate"][0]
-    assert gen["unknown_words"] == ["квакозябра"] and gen["dictionary_hits"] == []
+    assert gen["dictionary_hits"] == []
+    assert [e for e in events(ctl) if e["event"] == "unknown"][0]["words"] == ["квакозябра"]
