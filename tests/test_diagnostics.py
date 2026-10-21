@@ -197,3 +197,19 @@ def test_note_changed_not_logged_for_next_patient(make_ctl, order_xlsx):
     ctl.generate("лигатурная, рабочий, перепел, явка 6 нед")
     ctl.generate("самолигирующая, детализация, замена дуги низ 19x25 ss")
     assert not [e for e in events(ctl) if e["event"] == "note_changed"]
+
+
+# ---------- 0.2 beta 3 ----------
+def test_learning_events(make_ctl, order_xlsx):
+    ctl = make_ctl()
+    ctl.set_diagnostics(True)
+    ctl.import_xlsx(order_xlsx)
+    r = ctl.generate("лигатурная, квакозябра")
+    ctl.add_item(r.text, "4g3")
+    ctl.skip_learning("4g3")
+    ctl.learn("квакозябра", "4g3")
+    ctl.unlearn("квакозябра")
+    names = [e["event"] for e in events(ctl)]
+    assert {"add_item", "learn_skip", "learn", "learn_undo"} <= set(names)
+    gen = [e for e in events(ctl) if e["event"] == "generate"][0]
+    assert gen["unknown_words"] == ["квакозябра"] and gen["dictionary_hits"] == []

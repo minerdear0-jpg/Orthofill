@@ -6,12 +6,15 @@ from pathlib import Path
 from typing import Callable
 
 import difflib
+import re
 import time
 import traceback
 
 from .diag import DiagLog, text_diff
 from .engine import Protocol, build_protocol, check_references, rule_warnings
 from .parse import extract_facts
+from .vocab import unknown_words
+from .addition import SearchHit, insert_item, search_items
 from .journal import Journal
 from .presets import PresetStore
 from .workbook import Workbook, WorkbookError, lines_for_reference, load_workbook_file
@@ -46,6 +49,22 @@ class GenerateResult:
     defaults_line: str
     copied: bool
     rows: list = field(default_factory=list)     # render.Row — для вида в окне
+    unknown: list = field(default_factory=list)  # [(начало, конец, слово)] непонятые слова записи
+
+
+@dataclass
+class AddResult:
+    text: str
+    line: int
+    status: str
+    code: str
+    candidates: list[str]
+    learned: str | None = None
+
+
+def _clean_word(word: str) -> str:
+    """Слово/фраза врача из записи: знаки препинания и переносы — пробелы."""
+    return re.sub(r'[,;:.!?()«»"\n\r\t]+', ' ', word)
 
 
 def _fmt_line(line: tuple[str, str]) -> str:
@@ -71,6 +90,7 @@ class Controller:
         self.diagnostics = False
         self.last_copy_edited = False
         self._last_generate_at = 0.0
+        self.last_learn_broke: list[str] = []
 
     # ---------- диагностика ----------
     def set_diagnostics(self, enabled: bool) -> None:
@@ -236,15 +256,91 @@ class Controller:
             self.clipboard(p.text)
             self.journal.log_copy(self.last_entry_id, p.text)
         self._last_shown = p.text
+        if p.dictionary_hits:
+            self.presets.count_hits(self.preset_id, p.dictionary_hits)
+            for e in self.workbook.dictionary:
+                if e.word in p.dictionary_hits:
+                    e.hits += 1
+        try:
+            unknown = unknown_words(self.workbook, raw)
+        except Exception as e:      # подчёркивание — подсказка, протокол важнее
+            self._log_error('unknown_words', e)
+            unknown = []
         if self.diagnostics:
             facts = extract_facts(raw)
             self._log('generate', entry_id=self.last_entry_id, raw=raw,
                       raw_norm=facts['raw_norm'], facts=facts,
                       lines=p.lines, warnings=p.warnings, defaults=p.defaults,
-                      preset=self._preset_ref(), sha256=self.workbook.sha256)
+                      preset=self._preset_ref(), sha256=self.workbook.sha256,
+                      dictionary_hits=p.dictionary_hits, unknown_words=[w for *_, w in unknown])
         defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
         status = 'Скопировано в буфер' if copy else 'Протокол пересобран (в буфер не копировался)'
-        return GenerateResult(p.text, status, p.warnings, defaults, copy, p.rows)
+        return GenerateResult(p.text, status, p.warnings, defaults, copy, p.rows, unknown)
+
+    # ---------- «Добавить пункт» и словарь врача ----------
+    def search(self, query: str) -> list[SearchHit]:
+        return search_items(self.workbook, query) if self.workbook else []
+
+    def word_candidates(self, raw: str) -> list[str]:
+        """Непонятые слова записи — последнее написанное первым."""
+        out = []
+        for *_, w in reversed(unknown_words(self.workbook, raw)):
+            if w not in out:
+                out.append(w)
+        return out
+
+    def add_item(self, current_text: str, code: str, word: str | None = None) -> AddResult:
+        """Вставить пункт в протокол (правки врача целы) и сразу скопировать.
+        word — подчёркнутое слово, с которого начали: оно запоминается сразу."""
+        wb = self.workbook
+        new, line = insert_item(wb, current_text, code)
+        replaced = new.count('\n') == current_text.count('\n')
+        self.copy(new)
+        item = wb.by_id[code]
+        section = wb.by_id.get(code[0])
+        where = section.text.strip().rstrip(':') if section else ''
+        status = f'✓ Добавлено: {item.text.strip()} → {where}. Протокол скопирован.'
+        self._log('add_item', code=code, text=item.text, replaced=replaced, word=word,
+                  raw=self._last_raw, preset=self._preset_ref())
+        learned = None
+        if word:
+            status += ' ' + self.learn(word, code)
+            learned = self.presets.norm_word(_clean_word(word))
+        candidates = [] if word else self.word_candidates(self._last_raw)
+        return AddResult(new, line, status, code, candidates, learned)
+
+    def learn(self, word: str, code: str) -> str:
+        w = self.presets.norm_word(_clean_word(word))
+        if not w:
+            return 'Выберите слово'
+        item = self.workbook.by_id[code]
+        before = {r.case_id: r.ok for r in check_references(self.workbook)}
+        self.presets.learn(self.preset_id, w, item.text, code)
+        self._reload()
+        after = {r.case_id: r.ok for r in check_references(self.workbook)}
+        self.last_learn_broke = [c for c, ok in before.items() if ok and not after.get(c, True)]
+        self._log('learn', word=w, code=code, item_text=item.text, raw=self._last_raw,
+                  broke=self.last_learn_broke, preset=self._preset_ref())
+        if self.last_learn_broke:
+            nums = ', '.join(self.last_learn_broke)
+            return f'Запомнено «{w}», но после этого не совпадает эталон {nums} — проверьте или отмените'
+        return f'Запомнено: «{w}» → {item.text.strip()}'
+
+    def unlearn(self, word: str) -> str:
+        w = self.presets.norm_word(_clean_word(word))
+        self.presets.unlearn(self.preset_id, w)
+        self._reload()
+        self.last_learn_broke = []
+        self._log('learn_undo', word=w, preset=self._preset_ref())
+        return f'Отменено: «{w}»'
+
+    def skip_learning(self, code: str) -> None:
+        self._log('learn_skip', code=code, raw=self._last_raw, preset=self._preset_ref())
+
+    def _reload(self) -> None:
+        self.workbook = self.presets.load(self.preset_id)
+        self.journal.snapshot(self.workbook)
+        self._refresh_status()
 
     def needs_confirm_regenerate(self, current_text: str) -> bool:
         cur = current_text.strip()
