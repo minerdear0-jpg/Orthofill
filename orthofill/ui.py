@@ -7,7 +7,7 @@ from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 from . import VERSION_LABEL
-from .controller import Controller, layout_mode
+from .controller import CASE_KINDS, Controller, layout_mode
 from .journal import DB_NAME, Journal, data_dir
 
 TITLE = f'Orthofill {VERSION_LABEL}'
@@ -134,9 +134,12 @@ class App:
                   foreground=MUTED).pack(anchor='w', pady=(0, 3))
         row = ttk.Frame(self.out_panel)
         row.pack(side='bottom', fill='x', pady=(8, 0))
-        ttk.Button(row, text='Копировать', command=self.copy).pack(side='left')
-        ttk.Button(row, text='Сохранить как эталон',
-                   command=self.save_reference).pack(side='left', padx=8)
+        self.out_row = row
+        self.out_btns = [
+            ttk.Button(row, text='Копировать', command=self.copy),
+            ttk.Button(row, text='Отметить ошибку', command=self.mark_case),
+            ttk.Button(row, text='Сохранить как эталон', command=self.save_reference),
+        ]
         tk.Label(self.out_panel, text=f'⚠  {REMINDER}', bg=WARN_BG, fg=WARN_FG,
                  highlightbackground=WARN_BORDER, highlightthickness=1, anchor='w',
                  justify='left', padx=8, pady=4).pack(side='bottom', fill='x', pady=(6, 0))
@@ -147,8 +150,13 @@ class App:
         st = ttk.Frame(r, padding=(12, 4, 12, 8))
         st.pack(fill='x', side='bottom')
         self.body.pack(fill='both', expand=True)   # после статуса: сжимается тело, а не статус
-        self.status_lbl = ttk.Label(st, text='')
-        self.status_lbl.pack(anchor='w')
+        line = ttk.Frame(st)
+        line.pack(anchor='w', fill='x')
+        self.status_lbl = ttk.Label(line, text='')
+        self.status_lbl.pack(side='left')
+        # появляется после копирования исправленного протокола
+        self.mark_prompt = ttk.Button(line, text='Отметить, что пошло не так',
+                                      style='Accent.TButton', command=self.mark_case)
         self.warn_lbl = ttk.Label(st, text='', foreground=WARN_TEXT, justify='left')
         self.warn_lbl.pack(anchor='w')
         self.def_lbl = ttk.Label(st, text='', foreground=MUTED, justify='left')
@@ -169,6 +177,12 @@ class App:
         self.bar_right.pack_forget()
         for w in self.bar_widgets:
             w.grid_forget()
+        for i, b in enumerate(self.out_btns):
+            b.grid_forget()
+            if mode == 'wide':
+                b.grid(row=0, column=i, padx=(0, 8))
+            else:   # узко: «Сохранить как эталон» — второй строкой
+                b.grid(row=i // 2, column=i % 2, padx=(0, 8), pady=2, sticky='w')
         if mode == 'wide':
             self.bar_left.pack(side='left')
             self.bar_right.pack(side='right')
@@ -237,8 +251,12 @@ class App:
         self.root.clipboard_append(text)
         self.root.update()
 
-    def _status(self, text: str, warnings=(), defaults_line: str = ''):
+    def _status(self, text: str, warnings=(), defaults_line: str = '', ask_mark=False):
         self.status_lbl.configure(text=text)
+        if ask_mark:
+            self.mark_prompt.pack(side='left', padx=(12, 0))
+        else:
+            self.mark_prompt.pack_forget()
         self.warn_lbl.configure(text='\n'.join(f'⚠ {w}' for w in warnings))
         self.def_lbl.configure(text=defaults_line)
 
@@ -280,7 +298,18 @@ class App:
     def copy(self):
         text = self.out_txt.get('1.0', 'end-1c').strip()
         if text:
-            self._status(self.ctl.copy(text))
+            status = self.ctl.copy(text)
+            if self.ctl.last_copy_edited:
+                self._status(f'{status}. Вы исправили протокол —', ask_mark=True)
+            else:
+                self._status(status)
+
+    def mark_case(self):
+        if self.ctl.last_protocol is None:
+            self._status('Сначала сформируйте протокол')
+            return
+        MarkCaseDialog(self, self.raw_txt.get('1.0', 'end-1c').strip(),
+                       self.out_txt.get('1.0', 'end-1c').strip())
 
     def save_reference(self):
         raw = self.raw_txt.get('1.0', 'end-1c').strip()
@@ -389,3 +418,67 @@ def selftest() -> int:
     except Exception as e:
         print(f'selftest-ui: {e}', file=sys.stderr)
         return 1
+
+
+class MarkCaseDialog:
+    """«Отметить ошибку»: один понятный выбор, остальное программа сохранит сама."""
+    CHOICES = [
+        ('me', 'записал(а) неточно: опечатка, сокращение, забыл(а) что-то написать'),
+        ('program', 'я записал(а) правильно, а программа поняла не так'),
+        ('classifier', 'в списке нет нужного пункта — пришлось писать свой текст'),
+        ('unknown', 'просто сохраните — разберутся'),
+    ]
+
+    def __init__(self, app: App, raw: str, corrected: str):
+        self.app, self.corrected = app, corrected
+        self.win = win = tk.Toplevel(app.root)
+        win.title('Отметить ошибку')
+        win.transient(app.root)
+        win.resizable(True, False)
+        body = ttk.Frame(win, padding=16)
+        body.pack(fill='both', expand=True)
+
+        ttk.Label(body, text='Что пошло не так?', font=app.f_title).pack(anchor='w', pady=(0, 8))
+        self.kind = tk.StringVar(value='unknown')
+        for key, hint in self.CHOICES:
+            ttk.Radiobutton(body, text=CASE_KINDS[key], value=key, variable=self.kind,
+                            command=self._toggle_raw).pack(anchor='w')
+            ttk.Label(body, text=hint, foreground=MUTED, wraplength=420,
+                      padding=(28, 0, 0, 6)).pack(anchor='w')
+
+        self.raw_box = ttk.Frame(body)
+        ttk.Label(self.raw_box, text='Как надо было записать:').pack(anchor='w', pady=(6, 2))
+        self.raw_entry = ttk.Entry(self.raw_box, font=app.f_text)
+        self.raw_entry.insert(0, raw)
+        self.raw_entry.pack(fill='x')
+
+        self.after_raw = ttk.Label(body, text='Своими словами, если хотите (необязательно):')
+        self.after_raw.pack(anchor='w', pady=(10, 2))
+        self.comment = ttk.Entry(body, font=app.f_text)
+        self.comment.pack(fill='x')
+
+        btns = ttk.Frame(body)
+        btns.pack(fill='x', pady=(14, 0))
+        ttk.Button(btns, text='Сохранить', style='Accent.TButton',
+                   command=self.save).pack(side='right')
+        ttk.Button(btns, text='Отмена', command=win.destroy).pack(side='right', padx=8)
+        win.bind('<Escape>', lambda e: win.destroy())
+        win.minsize(460, 0)
+        win.grab_set()
+        self.comment.focus_set()
+
+    def _toggle_raw(self):
+        if self.kind.get() == 'me':
+            self.raw_box.pack(fill='x', before=self.after_raw)
+            self.raw_entry.focus_set()
+        else:
+            self.raw_box.pack_forget()
+
+    def save(self):
+        kind = self.kind.get()
+        status = self.app.ctl.mark_case(
+            kind, self.corrected,
+            corrected_raw=self.raw_entry.get().strip() if kind == 'me' else None,
+            comment=self.comment.get())
+        self.win.destroy()
+        self.app._status(status)

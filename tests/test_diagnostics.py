@@ -115,3 +115,69 @@ def test_toggle_is_logged(make_ctl):
     ctl.set_diagnostics(True)
     ctl.set_diagnostics(False)
     assert [e["event"] for e in events(ctl)] == ["diagnostics_on", "diagnostics_off"]
+
+
+# ---------- «Отметить ошибку» ----------
+def test_mark_case_saved_even_if_diagnostics_off(make_ctl, order_xlsx):
+    ctl = make_ctl()
+    ctl.open_file(order_xlsx)
+    gen = ctl.generate("лигатурная, явка 6 нед").text
+    fixed = gen.replace("6 недель.", "8 недель.")
+    status = ctl.mark_case("program", fixed, comment="писал 6, а надо 8")
+    assert status == "Спасибо, случай сохранён"
+    ev = [e for e in events(ctl) if e["event"] == "case"][-1]
+    assert ev["kind"] == "program" and ev["kind_label"] == "Программа"
+    assert ev["raw"] == "лигатурная, явка 6 нед" and ev["generated"] == gen
+    assert ev["corrected"] == fixed and "+8 недель." in ev["diff"]
+    assert ev["comment"] == "писал 6, а надо 8" and ev["corrected_raw"] is None
+    assert ev["facts"]["weeks"] == 6 and ev["file"] == "order.xlsx"
+    assert not ctl.diagnostics          # галочку не включили
+
+
+def test_mark_case_me_keeps_corrected_raw(make_ctl, order_xlsx):
+    ctl = make_ctl()
+    ctl.open_file(order_xlsx)
+    gen = ctl.generate("лигатурная, явка 6 нед").text
+    ctl.mark_case("me", gen, corrected_raw="лигатурная, явка 8 нед")
+    ev = [e for e in events(ctl) if e["event"] == "case"][-1]
+    assert ev["kind_label"] == "Я" and ev["corrected_raw"] == "лигатурная, явка 8 нед"
+
+
+def test_mark_case_unknown_default_and_no_protocol(make_ctl, order_xlsx):
+    ctl = make_ctl()
+    ctl.open_file(order_xlsx)
+    assert ctl.mark_case("unknown", "x") == "Сначала сформируйте протокол"
+    ctl.generate("лигатурная")
+    assert ctl.mark_case("unknown", "x") == "Спасибо, случай сохранён"
+    assert [e for e in events(ctl) if e["event"] == "case"][-1]["kind_label"] == "Не знаю"
+
+
+def test_copy_edited_flag(make_ctl, order_xlsx):
+    ctl = make_ctl()
+    ctl.open_file(order_xlsx)
+    text = ctl.generate("лигатурная").text
+    ctl.copy(text)
+    assert ctl.last_copy_edited is False
+    ctl.copy(text + "\nправка")
+    assert ctl.last_copy_edited is True
+    ctl.generate("лигатурная, перепел")
+    assert ctl.last_copy_edited is False
+
+
+def test_note_changed_logged(make_ctl, order_xlsx):
+    ctl = make_ctl()
+    ctl.set_diagnostics(True)
+    ctl.open_file(order_xlsx)
+    ctl.generate("лигатурная, рабочий, перепел, явка 6 нед")
+    ctl.generate("лигатурная, рабочий, перепел, явка 8 нед")
+    ev = [e for e in events(ctl) if e["event"] == "note_changed"][-1]
+    assert ev["before"].endswith("6 нед") and ev["after"].endswith("8 нед")
+
+
+def test_note_changed_not_logged_for_next_patient(make_ctl, order_xlsx):
+    ctl = make_ctl()
+    ctl.set_diagnostics(True)
+    ctl.open_file(order_xlsx)
+    ctl.generate("лигатурная, рабочий, перепел, явка 6 нед")
+    ctl.generate("самолигирующая, детализация, замена дуги низ 19x25 ss")
+    assert not [e for e in events(ctl) if e["event"] == "note_changed"]

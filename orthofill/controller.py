@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+import difflib
+import time
 import traceback
 
 from .diag import DiagLog, text_diff
@@ -15,6 +17,18 @@ from .workbook import (FileLockedError, Workbook, WorkbookError, append_referenc
                        lines_for_reference, load_workbook_file)
 
 WIDE_MIN_WIDTH = 900
+
+# «Что пошло не так?» — варианты для врача
+CASE_KINDS = {
+    'me': 'Я',
+    'program': 'Программа',
+    'classifier': 'Классификатор',
+    'unknown': 'Не знаю',
+}
+# Повторный Ctrl+Enter с похожей записью вскоре после первого — врач поправил запись,
+# а не перешёл к следующему пациенту
+NOTE_FIX_SECONDS = 120
+NOTE_FIX_SIMILARITY = 0.6
 
 
 def layout_mode(width: int) -> str:
@@ -49,6 +63,8 @@ class Controller:
         self.diag_dir = journal.db_path.parent / 'diagnostics'
         self._diag = DiagLog(self.diag_dir)
         self.diagnostics = False
+        self.last_copy_edited = False
+        self._last_generate_at = 0.0
 
     # ---------- диагностика ----------
     def set_diagnostics(self, enabled: bool) -> None:
@@ -138,7 +154,15 @@ class Controller:
         except Exception as e:
             self._log_error('generate', e)
             return fail(f'✗ Ошибка: {e}')
+        prev_raw, prev_at = self._last_raw, self._last_generate_at
+        if (self.diagnostics and prev_raw and raw.strip() != prev_raw.strip()
+                and time.monotonic() - prev_at <= NOTE_FIX_SECONDS
+                and difflib.SequenceMatcher(None, prev_raw, raw).ratio() >= NOTE_FIX_SIMILARITY):
+            self._log('note_changed', before=prev_raw, after=raw,
+                      seconds=round(time.monotonic() - prev_at))
         self.last_protocol, self._last_raw = p, raw
+        self._last_generate_at = time.monotonic()
+        self.last_copy_edited = False
         self.last_entry_id = self.journal.log_generate(raw, p, self.workbook.sha256)
         self.clipboard(p.text)
         self.journal.log_copy(self.last_entry_id, p.text)
@@ -161,12 +185,31 @@ class Controller:
         self._last_shown = text
         if self.last_entry_id is not None:
             self.journal.log_copy(self.last_entry_id, text)
-        if self.diagnostics and self.last_protocol is not None:
+        if self.last_protocol is not None:
             generated = self.last_protocol.text
             diff = text_diff(generated, text) if text.strip() != generated.strip() else ''
+            self.last_copy_edited = bool(diff)
             self._log('copy', entry_id=self.last_entry_id, raw=self._last_raw,
                       generated=generated, copied=text, edited=bool(diff), diff=diff)
         return 'Скопировано в буфер'
+
+    def mark_case(self, kind: str, corrected_text: str, corrected_raw: str | None = None,
+                  comment: str = '') -> str:
+        """«Отметить ошибку»: пишется в диагностику всегда, даже без галочки —
+        это явное действие врача."""
+        if self.last_protocol is None or self.workbook is None:
+            return 'Сначала сформируйте протокол'
+        generated = self.last_protocol.text
+        self._diag.write(
+            'case', kind=kind, kind_label=CASE_KINDS[kind],
+            entry_id=self.last_entry_id, raw=self._last_raw,
+            facts=extract_facts(self._last_raw),
+            generated=generated, lines=self.last_protocol.lines,
+            warnings=self.last_protocol.warnings, defaults=self.last_protocol.defaults,
+            corrected=corrected_text, diff=text_diff(generated, corrected_text),
+            corrected_raw=corrected_raw if kind == 'me' else None,
+            comment=comment.strip(), file=self.workbook.path.name, sha256=self.workbook.sha256)
+        return 'Спасибо, случай сохранён'
 
     def save_reference(self, raw: str, final_text: str) -> str:
         wb = self.workbook
