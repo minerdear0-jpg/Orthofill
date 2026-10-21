@@ -92,6 +92,9 @@ class App:
         tk.Label(head, text='Orthofill', bg=ACCENT, fg='white', font=self.f_title).pack(side='left')
         tk.Label(head, text=VERSION_LABEL, bg=BADGE_BG, fg=BADGE_FG, font=self.f_small,
                  padx=6).pack(side='left', padx=(8, 0))
+        # имя пресета крупно — чтобы не перепутать тип карточки
+        self.head_preset = tk.Label(head, text='', bg=ACCENT, fg='white', font=self.f_title)
+        self.head_preset.pack(side='left', padx=(14, 0))
         about = tk.Label(head, text='О программе', bg=ACCENT, fg='white', cursor='hand2',
                          font=tkfont.Font(family=self.f_small.actual('family'), size=9,
                                           underline=True))
@@ -104,7 +107,11 @@ class App:
         self.bar = bar = ttk.Frame(r, padding=(12, 8, 12, 4))
         bar.pack(fill='x')
         self.bar_left = left = ttk.Frame(bar)
-        ttk.Button(left, text='Открыть файл…', command=self.open_file).pack(side='left')
+        self.preset_btn = ttk.Menubutton(left, text='Пресет')
+        self.preset_menu = tk.Menu(self.preset_btn, tearoff=False)
+        self.preset_btn['menu'] = self.preset_menu
+        self.preset_btn.pack(side='left')
+        self.preset_var = tk.IntVar(value=-1)
         self.file_lbl = ttk.Label(left, text='', padding=(10, 0))
         self.file_lbl.pack(side='left')
         self.bar_right = right = ttk.Frame(bar)
@@ -149,8 +156,18 @@ class App:
         tk.Label(self.out_panel, text=f'⚠  {REMINDER}', bg=WARN_BG, fg=WARN_FG,
                  highlightbackground=WARN_BORDER, highlightthickness=1, anchor='w',
                  justify='left', padx=8, pady=4).pack(side='bottom', fill='x', pady=(6, 0))
+        # полоса «пресет сменён — пересобрать?» (если протокол правили руками)
+        self.switch_bar = tk.Frame(self.out_panel, bg=WARN_BG, highlightthickness=1,
+                                   highlightbackground=WARN_BORDER, padx=8, pady=4)
+        tk.Label(self.switch_bar, text='Пресет сменён. Пересобрать протокол?', bg=WARN_BG,
+                 fg=WARN_FG).pack(side='left')
+        ttk.Button(self.switch_bar, text='Оставить как есть',
+                   command=lambda: self.switch_bar.pack_forget()).pack(side='right')
+        ttk.Button(self.switch_bar, text='Пересобрать',
+                   command=self._rebuild_after_switch).pack(side='right', padx=(0, 6))
         f, self.out_txt = self._text(self.out_panel, 6)
         f.pack(fill='both', expand=True)
+        self.out_frame = f
 
         # Строка статуса
         st = ttk.Frame(r, padding=(12, 4, 12, 8))
@@ -163,6 +180,9 @@ class App:
         # появляется после копирования исправленного протокола
         self.mark_prompt = ttk.Button(line, text='Отметить, что пошло не так',
                                       style='Accent.TButton', command=self.mark_case)
+        # появляется после смены пресета: вернуть прежний
+        self.undo_btn = ttk.Button(line, text='Вернуть', command=self._undo_switch)
+        self._undo_to: int | None = None
         self.warn_lbl = ttk.Label(st, text='', foreground=WARN_TEXT, justify='left')
         self.warn_lbl.pack(anchor='w')
         self.def_lbl = ttk.Label(st, text='', foreground=MUTED, justify='left')
@@ -220,6 +240,7 @@ class App:
         if e.widget is self.root:
             scale = self.root.winfo_fpixels('1i') / 96
             self._relayout(layout_mode(int(e.width / scale)))
+            self._show_preset_name()
             self.file_lbl.configure(wraplength=0 if self.mode == 'wide' else max(150, e.width - 220))
 
     # ---------- клавиши ----------
@@ -237,7 +258,7 @@ class App:
             self.copy()
             return 'break'
         if key == 'o':
-            self.open_file()
+            self.import_xlsx()
             return 'break'
         if latin or key is None:
             return None          # обычная раскладка — работает штатная привязка
@@ -257,8 +278,13 @@ class App:
         self.root.clipboard_append(text)
         self.root.update()
 
-    def _status(self, text: str, warnings=(), defaults_line: str = '', ask_mark=False):
+    def _status(self, text: str, warnings=(), defaults_line: str = '', ask_mark=False,
+                undo=False):
         self.status_lbl.configure(text=text)
+        if undo:
+            self.undo_btn.pack(side='left', padx=(12, 0))
+        else:
+            self.undo_btn.pack_forget()
         if ask_mark:
             self.mark_prompt.pack(side='left', padx=(12, 0))
         else:
@@ -268,26 +294,156 @@ class App:
 
     def _show_file_status(self):
         s = self.ctl.file_status
-        self.file_lbl.configure(text=f'{self._file_name()}   {s}',
+        self.file_lbl.configure(text=s,
                                 foreground='#1f7a3f' if s.startswith('✓') else
-                                WARN_TEXT if s.startswith(('⚠', '✗', 'Файл не найден')) else MUTED)
+                                WARN_TEXT if s.startswith(('⚠', '✗', 'Пресетов нет')) else MUTED)
         if self.ctl.details:
             self.details_btn.state(['!disabled'])
         else:
             self.details_btn.state(['disabled'])
+        self._refresh_presets()
 
-    def _file_name(self) -> str:
+    # ---------- пресеты ----------
+    def _refresh_presets(self):
+        m = self.preset_menu
+        m.delete(0, 'end')
+        for p in self.ctl.presets.list():
+            m.add_radiobutton(label=p.name, value=p.id, variable=self.preset_var,
+                              command=lambda pid=p.id: self.switch_to(pid))
+        if self.ctl.presets.list():
+            m.add_separator()
+        m.add_command(label='Импорт xlsx…', command=self.import_xlsx, accelerator='Ctrl+O')
+        m.add_command(label='Экспорт xlsx…', command=self.export_xlsx,
+                      state='normal' if self.ctl.workbook else 'disabled')
         wb = self.ctl.workbook
-        return f'📄 {wb.path.name}' if wb else ''
+        self.preset_var.set(self.ctl.preset_id if self.ctl.preset_id is not None else -1)
+        self.preset_btn.configure(text=f'Пресет: {wb.name}' if wb else 'Пресет')
+        self._show_preset_name()
 
-    def open_file(self):
-        p = filedialog.askopenfilename(title='Файл классификатора',
+    def _show_preset_name(self):
+        wb = self.ctl.workbook
+        name = wb.name if wb else 'пресет не выбран'
+        if self.mode == 'narrow' and len(name) > 24:
+            name = name[:23] + '…'
+        self.head_preset.configure(text=name)
+
+    def _choice(self, title: str, text: str, buttons: list[tuple[str, str]]) -> str | None:
+        """Маленькое окно с кнопками; возвращает ключ нажатой или None (закрыли)."""
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.transient(self.root)
+        win.resizable(False, False)
+        body = ttk.Frame(win, padding=16)
+        body.pack(fill='both', expand=True)
+        ttk.Label(body, text=text, wraplength=420, justify='left').pack(anchor='w', pady=(0, 12))
+        row = ttk.Frame(body)
+        row.pack(anchor='e')
+        result: list[str | None] = [None]
+
+        def pick(key):
+            result[0] = key
+            win.destroy()
+        for i, (key, label) in enumerate(buttons):
+            ttk.Button(row, text=label, style='Accent.TButton' if i == 0 else 'TButton',
+                       command=lambda k=key: pick(k)).pack(side='left', padx=(0 if i == 0 else 6, 0))
+        win.bind('<Escape>', lambda e: win.destroy())
+        win.grab_set()
+        win.wait_window()
+        return result[0]
+
+    def import_xlsx(self):
+        p = filedialog.askopenfilename(title='Импорт пресета из xlsx',
                                        filetypes=[('Excel', '*.xlsx'), ('Все файлы', '*.*')])
-        if p:
-            self.ctl.open_file(Path(p))
-            self._show_file_status()
-            if self.ctl.details and not self.ctl.file_status.startswith('✓'):
-                self.show_details()
+        if not p:
+            return
+        update_id = None
+        wb = self.ctl.workbook
+        if wb is not None:
+            ans = self._choice('Импорт xlsx', f'Файл: {Path(p).name}\n\nСоздать из него новый '
+                               f'пресет или обновить текущий «{wb.name}»?',
+                               [('new', 'Новый пресет'), ('update', f'Обновить «{wb.name}»'),
+                                ('cancel', 'Отмена')])
+            if ans in (None, 'cancel'):
+                return
+            if ans == 'update':
+                update_id = self.ctl.preset_id
+                if self.ctl.needs_export_before_update(update_id):
+                    ans = self._choice(
+                        'Импорт xlsx', f'В пресете «{wb.name}» есть эталоны, которых нет в '
+                        f'выгруженном файле. При обновлении они пропадут.\n\nСначала выгрузить?',
+                        [('export', 'Выгрузить…'), ('go', 'Обновить без выгрузки'),
+                         ('cancel', 'Отмена')])
+                    if ans in (None, 'cancel'):
+                        return
+                    if ans == 'export' and not self.export_xlsx():
+                        return
+        self.ctl.import_xlsx(Path(p), update_id=update_id)
+        self._show_file_status()
+        if self.ctl.details and not self.ctl.file_status.startswith('✓'):
+            self.show_details()
+
+    def export_xlsx(self) -> bool:
+        wb = self.ctl.workbook
+        if wb is None:
+            return False
+        from datetime import date
+        p = filedialog.asksaveasfilename(title='Экспорт пресета в xlsx', defaultextension='.xlsx',
+                                         initialfile=f'{wb.name}-{date.today():%Y-%m-%d}.xlsx',
+                                         filetypes=[('Excel', '*.xlsx')])
+        if not p:
+            return False
+        msg = self.ctl.export_xlsx(Path(p))
+        self._status(msg)
+        self._refresh_presets()
+        return msg.startswith('Выгружено')
+
+    def switch_to(self, pid: int):
+        if pid == self.ctl.preset_id:
+            return
+        out = self.out_txt.get('1.0', 'end-1c')
+        edited = self.ctl.needs_confirm_regenerate(out)
+        prev = self.ctl.preset_id
+        self.ctl.switch_preset(pid)
+        self._show_file_status()
+        self.switch_bar.pack_forget()
+        raw = self.raw_txt.get('1.0', 'end-1c').strip()
+        if not raw or not out.strip():
+            self._status(f'Пресет: {self.ctl.workbook.name}')
+            return
+        if edited:
+            self.switch_bar.pack(fill='x', pady=(0, 6), before=self.out_frame)
+            self._status(f'Пресет: {self.ctl.workbook.name}')
+            return
+        self._undo_to = prev
+        self._regenerate_silently(raw, f'Пресет: {self.ctl.workbook.name} — протокол пересобран',
+                                  undo=True)
+
+    def _regenerate_silently(self, raw: str, status: str, undo=False):
+        """Пересобрать без копирования — буфер при смене пресета не меняется."""
+        r = self.ctl.generate(raw, copy=False)
+        if r.text:
+            self.out_txt.delete('1.0', 'end')
+            self.out_txt.insert('1.0', r.text)
+            self.out_txt.edit_reset()
+            self._status(status, r.warnings, r.defaults_line, undo=undo)
+        else:
+            self._status(r.status)
+
+    def _rebuild_after_switch(self):
+        self.switch_bar.pack_forget()
+        raw = self.raw_txt.get('1.0', 'end-1c').strip()
+        if raw:
+            self._regenerate_silently(raw, 'Протокол пересобран (в буфер не копировался)')
+
+    def _undo_switch(self):
+        pid, self._undo_to = self._undo_to, None
+        if pid is None or not self.ctl.presets.exists(pid):
+            return
+        self.ctl.switch_preset(pid)
+        self._show_file_status()
+        raw = self.raw_txt.get('1.0', 'end-1c').strip()
+        if raw:
+            self._regenerate_silently(raw, f'Пресет возвращён: {self.ctl.workbook.name}')
 
     def generate(self):
         current = self.out_txt.get('1.0', 'end-1c')
@@ -324,8 +480,8 @@ class App:
         if not (raw and text and wb):
             self._status('Сначала сформируйте протокол')
             return
-        if messagebox.askyesno(TITLE, f'Сохранить запись и протокол как эталон в файл\n'
-                                      f'{wb.path.name}?\n\nЗапись: {raw[:200]}'):
+        if messagebox.askyesno(TITLE, f'Сохранить запись и протокол как эталон в пресет\n'
+                                      f'«{wb.name}»?\n\nЗапись: {raw[:200]}'):
             self._status(self.ctl.save_reference(raw, text))
             self._show_file_status()
 
@@ -342,7 +498,7 @@ class App:
     def about(self):
         wb = self.ctl.workbook
         messagebox.showinfo(TITLE, f'{window_title()}\n\n{DISCLAIMER}\n\n'
-                                   f'Файл классификатора:\n{wb.path if wb else "не открыт"}\n\n'
+                                   f'Пресет:\n{_preset_about(self.ctl)}\n\n'
                                    f'Журнал:\n{self.ctl.journal.db_path}\n\n'
                                    f'Диагностика ({"включена" if self.ctl.diagnostics else "выключена"}):\n'
                                    f'{self.ctl.diag_dir}')
@@ -357,8 +513,7 @@ class App:
 
     def _show_diag(self):
         on = self.ctl.diagnostics
-        self.head_lbl.configure(text='● Диагностика включена' if on else 'Протокол активации',
-                                fg=BADGE_BG if on else '#d7e6f2')
+        self.head_lbl.configure(text='● Диагностика' if on else '', fg=BADGE_BG)
         self.diag_btn.state(['!disabled'] if on or self.ctl.diag_dir.exists() else ['disabled'])
 
     def open_diag_folder(self):
@@ -379,6 +534,15 @@ class App:
         j.set_setting('geometry', self.root.geometry())
         j.set_setting('topmost', '1' if self.topmost.get() else '0')
         self.root.destroy()
+
+
+def _preset_about(ctl: Controller) -> str:
+    wb = ctl.workbook
+    if wb is None:
+        return 'не выбран'
+    info = next((p for p in ctl.presets.list() if p.id == ctl.preset_id), None)
+    when = f', импорт {info.imported_at[:10]}' if info and info.imported_at else ''
+    return f'{wb.name} (из {wb.source or "—"}{when})'
 
 
 def run() -> None:
