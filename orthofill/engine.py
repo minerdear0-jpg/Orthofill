@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .methods import METHOD_LABELS
 from .parse import arches_in, extract_facts, parse_wire_from_label
 from .text import norm, stem_in, word_stem
 from .workbook import Item, ReferenceCase, Workbook
@@ -53,25 +54,6 @@ class CaseResult:
     ok: bool
     missing: list[tuple[str, str]]
     extra: list[tuple[str, str]]
-
-
-# Способы выбора варианта — подписи для врача (лист «Настройки», редактор)
-METHOD_LABELS = {
-    'words':    'по словам записи',
-    'system':   'тип системы',
-    'stage':    'этап лечения',
-    'mucosa':   'слизистая (норма / эрозия)',
-    'hygiene':  'норма / не норма (гигиена)',
-    'bracket':  'норма / не норма (брекет-система)',
-    'relation': 'класс по сторонам (моляры, клыки)',
-    'wire':     'дуга (размер, материал, челюсть)',
-    'ligature': 'лигатуры по челюсти',
-    'binding':  'подвязывание по челюсти',
-    'elastics': 'названия (эластики)',
-    'adjust':   'изгиб по порядку',
-    'dynamics': 'динамика (по плану / без динамики)',
-    'visit':    'срок (недели)',
-}
 
 
 def _guess_kind(group: Item) -> str | None:

@@ -8,7 +8,13 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from .methods import METHOD_LABELS, WHEN_LABELS
+
 HEADER = 'ID_CLASS'
+SETTINGS_SHEET = 'Настройки'
+DICTIONARY_SHEET = 'Словарь'
+SETTINGS_HEADER = ['Код', 'Способ выбора', 'Когда в протоколе', 'По умолчанию', 'Слова']
+DICTIONARY_HEADER = ['Слово', 'Пункт', 'Код', 'Добавлено', 'Сработало раз']
 _CODE_RE = re.compile(r'\d|\d[a-zа-я]|\d[a-zа-я]\d+')
 
 
@@ -39,8 +45,18 @@ class ReferenceCase:
 
 
 @dataclass
+class DictEntry:
+    """Слово врача → пункт пресета (по тексту пункта; код — подсказка)."""
+    word: str
+    item_text: str
+    code: str
+    added: str = ''
+    hits: int = 0
+
+
+@dataclass
 class Workbook:
-    path: Path
+    path: Path | None
     sha256: str
     items: list[Item]
     by_id: dict[str, Item]
@@ -48,6 +64,9 @@ class Workbook:
     references: list[ReferenceCase]
     problems: list[str]             # с ними работать нельзя
     warnings: list[str]
+    name: str = ''                  # имя пресета
+    source: str = ''                # файл, из которого пресет импортирован
+    dictionary: list[DictEntry] = field(default_factory=list)
 
 
 def clean_code(value) -> str:
@@ -63,20 +82,26 @@ def clean_text(value) -> str:
     return re.sub(r'<br\s*/?>', ' ', str(value), flags=re.I).strip()
 
 
-def _open_sheet(path: Path):
+def _open_book(path: Path):
     if not path.exists():
         raise WorkbookError(f'Файл не найден: {path}')
     try:
-        return load_workbook(path, data_only=True).worksheets[0]
+        return load_workbook(path, data_only=True)
     except Exception as e:  # повреждён / не xlsx
         raise WorkbookError(f'Не удалось открыть {path.name}: {e}') from e
 
 
 def find_header_row(ws) -> int:
-    for (cell,) in ws.iter_rows(min_col=1, max_col=1):
-        if cell.value is not None and str(cell.value).strip().upper() == HEADER:
-            return cell.row
-    raise WorkbookError(f'В файле нет строки заголовка с «{HEADER}» в колонке A')
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value is not None and str(cell.value).strip().upper() == HEADER:
+                if cell.column == 1:
+                    return cell.row
+                raise WorkbookError(
+                    f'Строка заголовка {HEADER} найдена в колонке {cell.column_letter}, '
+                    f'а должна быть в A (строка {cell.row})')
+    raise WorkbookError(f'Не найдена строка заголовка: в колонке A должно стоять {HEADER} '
+                        f'(проверьте первые строки файла)')
 
 
 def _row_values(ws, header_row):
@@ -90,7 +115,8 @@ def _level(code: str) -> int:
 
 def load_workbook_file(path: str | Path) -> Workbook:
     path = Path(path)
-    ws = _open_sheet(path)
+    book = _open_book(path)
+    ws = book.worksheets[0]
     header = find_header_row(ws)
 
     items: list[Item] = []
@@ -139,6 +165,11 @@ def load_workbook_file(path: str | Path) -> Workbook:
         if len(codes) > 1:
             warnings.append(f'одинаковый текст у {", ".join(codes)}: «{text[:60]}»')
 
+    if SETTINGS_SHEET in book.sheetnames:
+        problems += _read_settings(book[SETTINGS_SHEET], by_id)
+    dictionary = (_read_dictionary(book[DICTIONARY_SHEET])
+                  if DICTIONARY_SHEET in book.sheetnames else [])
+
     return Workbook(
         path=path,
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -148,7 +179,56 @@ def load_workbook_file(path: str | Path) -> Workbook:
         references=references,
         problems=problems,
         warnings=warnings,
+        name=path.stem,
+        source=path.name,
+        dictionary=dictionary,
     )
+
+
+def _split_words(value) -> list[str]:
+    return [w.strip() for w in re.split(r'[,;\n]', str(value or '')) if w.strip()]
+
+
+def _read_settings(ws, by_id: dict[str, Item]) -> list[str]:
+    """Лист «Настройки»: Код | Способ выбора | Когда в протоколе | По умолчанию | Слова."""
+    method_of = {v: k for k, v in METHOD_LABELS.items()}
+    when_of = {v: k for k, v in WHEN_LABELS.items()}
+    problems = []
+    for rownum, row in enumerate(ws.iter_rows(min_row=2, max_col=5, values_only=True), start=2):
+        code, method, when, default, words = tuple(row) + (None,) * (5 - len(row))
+        if code is None or not str(code).strip():
+            continue
+        where = f'{SETTINGS_SHEET}, строка {rownum}'
+        it = by_id.get(clean_code(code))
+        if it is None:
+            problems.append(f'{where}: пункта «{clean_code(code)}» нет в классификаторе')
+            continue
+        if method:
+            if str(method).strip() not in method_of:
+                problems.append(f'{where}: способ выбора «{method}» не знаю')
+            else:
+                it.method = method_of[str(method).strip()]
+        if when:
+            if str(when).strip() not in when_of:
+                problems.append(f'{where}: «{when}» — нужно «всегда» или «если упомянут»')
+            else:
+                it.when = when_of[str(when).strip()]
+        if default:
+            it.default = clean_code(default)
+        it.words = _split_words(words)
+    return problems
+
+
+def _read_dictionary(ws) -> list[DictEntry]:
+    out = []
+    for row in ws.iter_rows(min_row=2, max_col=5, values_only=True):
+        word, item_text, code, added, hits = tuple(row) + (None,) * (5 - len(row))
+        if word is None or not str(word).strip():
+            continue
+        out.append(DictEntry(str(word).strip(), clean_text(item_text),
+                             clean_code(code) if code is not None else '',
+                             str(added or ''), int(hits or 0)))
+    return out
 
 
 # ---------- «Сохранить как эталон» ----------
