@@ -318,17 +318,19 @@ class App:
     def _marks_text(rows, warnings, limit: int = 8) -> str:
         """Причины пометок — «! строка… — причина»; прочие предупреждения — «⚠ …».
         Не больше limit строк: в узком окне список иначе съедает протокол."""
-        out, used = [], set()
+        marks, used = [], set()
         for row in rows:
             for reason in row.check:
                 short = row.text if len(row.text) <= 40 else row.text[:40] + '…'
-                out.append(f'! {short} — {reason}')
+                marks.append(f'! {short} — {reason}')
                 used.add(reason)
-        out += [f'⚠ {w}' for w in warnings if w not in used]
-        if len(out) > limit:
-            rest = len(out) - (limit - 1)
-            out = out[:limit - 1] + [f'… и ещё {rest} — строки с оранжевой полосой в протоколе']
-        return '\n'.join(out)
+        # предупреждения без строки в протоколе (пункт не попал) — первыми и всегда
+        warns = [f'⚠ {w}' for w in warnings if w not in used]
+        room = max(1, limit - len(warns))
+        if len(marks) > room:
+            rest = len(marks) - (room - 1)
+            marks = marks[:room - 1] + [f'… и ещё {rest} — строки с оранжевой полосой в протоколе']
+        return '\n'.join(warns + marks)
 
     def _show_marks(self):
         rows, warnings = getattr(self, '_last_marks', ([], []))

@@ -242,6 +242,24 @@ def _ws_key(text: str) -> str:
     return ' '.join(text.split())
 
 
+def _tail_words(text: str, group: Item) -> set[str]:
+    """Слова текста без начальных слов группы: «Тип системы: вестибулярная
+    лигатурная.» → {вестибулярная, лигатурная}."""
+    from .text import norm
+    words = re.findall(r'[а-яa-z0-9]+', norm(text))
+    head = re.findall(r'[а-яa-z0-9]+', norm(group.text))
+    if words[:len(head)] == head:
+        words = words[len(head):]
+    return set(words)
+
+
+def _same_group(prev_code: str, group: Item, wb: Workbook) -> bool:
+    """Предыдущая строка — эта же группа или её вариант (строку группы не повторять)."""
+    prev = wb.by_id.get(prev_code)
+    return prev_code == group.id or (prev is not None and prev.parent == group.id
+                                     and prev.level == 3)
+
+
 def _variant_join_text(group: Item, variant: Item) -> list[str]:
     from .render import join_group
     return [_ws_key(join_group(group.text, variant.text)),
@@ -259,12 +277,21 @@ def normalize_references(wb: Workbook) -> None:
             if it is not None and it.children and _ws_key(text) != _ws_key(it.text):
                 hit = next((c for c in it.children
                             if _ws_key(text) in _variant_join_text(it, c)), None)
+                if hit is None:      # варианты переписаны целыми фразами — по словам после группы
+                    tail = _tail_words(text, it)
+                    cands = [c for c in it.children if tail and tail <= _tail_words(c.text, it)]
+                    hit = cands[0] if len(cands) == 1 else None
                 if hit is not None:
-                    out += [(it.id, it.text), (hit.id, hit.text)]
+                    if not (out and _same_group(out[-1][0], it, wb)):
+                        out.append((it.id, it.text))
+                    out.append((hit.id, hit.text))
                     continue
+            elif it is not None and it.children:
+                if out and _same_group(out[-1][0], it, wb):
+                    continue         # «группа, вариант, группа, вариант» → одна строка группы
             elif it is not None and it.level == 3 and not it.orphan and it.parent in wb.by_id:
-                if not out or out[-1][0] != it.parent:
-                    group = wb.by_id[it.parent]
+                group = wb.by_id[it.parent]
+                if not (out and _same_group(out[-1][0], group, wb)):
                     out.append((group.id, group.text))
             out.append((code, text))
         case.lines = out
@@ -301,7 +328,15 @@ def lines_for_reference(wb: Workbook, generated, final_text: str) -> list[tuple[
         return None
 
     def row_lines(row) -> list[tuple[str, str]]:
-        return [(c, wb.by_id[c].text) for c in row.codes if c in wb.by_id]
+        res = []
+        for c in row.codes:
+            it = wb.by_id.get(c)
+            if it is None:
+                continue
+            if it.children and out and _same_group(out[-1][0], it, wb):
+                continue             # второй вариант той же группы — без повтора группы
+            res.append((c, it.text))
+        return res
 
     out: list[tuple[str, str]] = []
     sm = difflib.SequenceMatcher(None, [_ws_key(r.text) for r in rows],

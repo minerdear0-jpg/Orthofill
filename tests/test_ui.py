@@ -101,3 +101,11 @@ def test_marks_list_recapped_on_resize(app):
     assert len(app.warn_lbl["text"].splitlines()) > 4
     app._relayout("narrow")
     assert len(app.warn_lbl["text"].splitlines()) <= 4
+
+
+def test_narrow_keeps_warnings_without_row(app):
+    """Ревью 0.2b2: «класс не указан» (строки нет) не должно прятаться за «… и ещё»."""
+    app._relayout("narrow")
+    _gen(app, "активация, лигатурная, класс 1, замена дуги 18х25 тма, явка 3 нед")
+    text = app.warn_lbl["text"]
+    assert "⚠" in text and text.splitlines()[0].startswith("⚠")

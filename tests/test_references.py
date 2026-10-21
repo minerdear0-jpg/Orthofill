@@ -76,3 +76,45 @@ def test_doctor_removed_row_is_mismatch(ctl, order_xlsx):
     text = ctl.generate("лигатурная").text.replace("осмотр.\n", "")
     ctl.save_reference("лигатурная", text)
     assert ctl.file_status == "⚠ эталоны 1/2 — подробнее"
+
+
+# ---------- итоговое ревью 0.2b2 ----------
+CHAIN = [("4p", "Эластическая цепочка без шага"), ("4p1", " на нижней челюсти."),
+         ("4p2", "на верхней челюсти.")]
+
+
+def test_two_variants_roundtrip(order_xlsx_with):
+    wb = order_xlsx_with(*CHAIN)
+    p = build_protocol(wb, "лигатурная, цепочка на обеих челюстях")
+    assert [c for c, _ in p.lines if c.startswith("4p")] == ["4p", "4p1", "4p2"]
+    assert lines_for_reference(wb, p, p.text) == p.lines
+
+
+def test_normalize_drops_repeated_group(order_xlsx_with):
+    wb = order_xlsx_with(*CHAIN)
+    case = wb.references[0]
+    case.lines += [("4p", "Эластическая цепочка без шага"), ("4p1", " на нижней челюсти."),
+                   ("4p", "Эластическая цепочка без шага"), ("4p2", "на верхней челюсти.")]
+    normalize_references(wb)
+    assert [c for c, _ in case.lines if c.startswith("4p")] == ["4p", "4p1", "4p2"]
+
+
+def test_normalize_full_sentence_variants(order_xlsx):
+    """Врач переписал варианты целыми фразами (order-new-aktiv.xlsx), а эталон —
+    из 0.1 со склеенной строкой: перевод находит вариант по словам после группы."""
+    import openpyxl
+    xl = openpyxl.load_workbook(order_xlsx)
+    ws = xl.worksheets[0]
+    new = {"2b1": "Тип системы: вестибулярная самолигируемая.",
+           "2b2": "Тип системы: вестибулярная лигатурная.",
+           "2c2": "Этап лечения:рабочий (коррекция окклюзии)."}
+    for row in ws.iter_rows(min_col=1, max_col=2):
+        if str(row[0].value).strip() in new:
+            row[1].value = new[str(row[0].value).strip()]
+    xl.save(order_xlsx)
+    wb = load_workbook_file(order_xlsx)
+    lines = wb.references[0].lines
+    assert ("2b2", "Тип системы: вестибулярная лигатурная.") in lines
+    assert ("2c2", "Этап лечения:рабочий (коррекция окклюзии).") in lines
+    (r,) = check_references(wb)
+    assert r.ok and r.own_lines == 0
