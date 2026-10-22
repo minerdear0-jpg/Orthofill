@@ -8,8 +8,8 @@ from conftest import ROOT
 
 
 def test_version():
-    assert orthofill.__version__ == "0.2.0b3"
-    assert orthofill.VERSION_LABEL == "0.2 beta 3"
+    assert orthofill.__version__ == "0.2.0b4"
+    assert orthofill.VERSION_LABEL == "0.2 beta 4"
 
 
 def test_pyproject_version_matches():
@@ -45,8 +45,8 @@ def test_build_id_from_build_module(monkeypatch):
 def test_window_title_has_version_and_build():
     from orthofill import buildinfo
     from orthofill.ui import window_title
-    assert window_title() == f"Orthofill 0.2 beta 3 · сборка {buildinfo.build_id()}"
-    assert re.match(r"Orthofill 0\.2 beta 3 · сборка \S+", window_title())
+    assert window_title() == f"Orthofill 0.2 beta 4 · сборка {buildinfo.build_id()}"
+    assert re.match(r"Orthofill 0\.2 beta 4 · сборка \S+", window_title())
 
 
 def test_diag_events_have_build(tmp_path):
@@ -56,7 +56,7 @@ def test_diag_events_have_build(tmp_path):
     DiagLog(tmp_path).write("x")
     (f,) = tmp_path.glob("*.jsonl")
     ev = json.loads(f.read_text(encoding="utf-8"))
-    assert ev["version"] == "0.2.0b3" and ev["build"] == buildinfo.build_id()
+    assert ev["version"] == "0.2.0b4" and ev["build"] == buildinfo.build_id()
 
 
 def make_git_dir(root, branch="feature/x", sha="0123456789abcdef0123", packed=False):
