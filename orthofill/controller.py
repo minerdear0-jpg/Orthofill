@@ -258,6 +258,7 @@ class Controller:
             self._log_error('preview', e)
             return GenerateResult('', f'✗ Ошибка: {e}', [], '', False)
         self._preview = (raw, list(tokens), p)
+        self._last_shown = p.text           # по нему окно узнаёт ручную правку протокола
         defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
         return GenerateResult(p.text, 'черновик — Ctrl+Enter подтвердить', p.warnings, defaults,
                               False, p.rows)

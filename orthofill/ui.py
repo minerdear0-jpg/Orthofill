@@ -49,8 +49,14 @@ def _set_dpi_aware() -> None:
 
 
 class App:
+    live_delay = 300        # мс паузы в наборе до пересборки черновика
+    unknown_delay = 800     # мс до подчёркивания непонятых слов
+
     def __init__(self, root: tk.Tk, controller: Controller):
         self.root, self.ctl = root, controller
+        self._live_job = self._unknown_job = None
+        self.live_frozen = False        # протокол поправлен руками — живое обновление стоит
+        self._live_kept = False         # «Оставить» — полоска больше не всплывает
         self.mode: str | None = None
         self._setup_fonts()
         self._build()
@@ -157,6 +163,7 @@ class App:
         self.raw_txt.tag_bind('unknown', '<Leave>', lambda e: self.raw_txt.configure(cursor='xterm'))
         self.raw_txt.tag_bind('unknown', '<Button-1>', self._on_unknown_click)
         self.raw_txt.bind('<KeyRelease>', self._unmark_unknown, add='+')
+        self.raw_txt.bind('<<Modified>>', self._on_raw_modified, add='+')
         f.pack(fill='both', expand=True)
         from .hintbox import HintBox
         self.hint_box = HintBox(self, self.raw_txt)
@@ -207,6 +214,14 @@ class App:
                    command=lambda: self.switch_bar.pack_forget()).pack(side='right')
         ttk.Button(self.switch_bar, text='Пересобрать',
                    command=self._rebuild_after_switch).pack(side='right', padx=(0, 6))
+        # живой протокол: после ручной правки — спросить, а не стереть
+        self.live_bar = tk.Frame(self.out_panel, bg=WARN_BG, highlightthickness=1,
+                                 highlightbackground=WARN_BORDER, padx=8, pady=4)
+        tk.Label(self.live_bar, text='Запись изменилась — обновить протокол?', bg=WARN_BG,
+                 fg=WARN_FG).pack(side='left')
+        ttk.Button(self.live_bar, text='Оставить', command=self._live_keep).pack(side='right')
+        ttk.Button(self.live_bar, text='Обновить',
+                   command=self._live_update_now).pack(side='right', padx=(0, 6))
         f, self.out_txt = self._text(self.out_panel, 6)
         f.pack(fill='both', expand=True)
         self.out_frame = f
@@ -607,14 +622,78 @@ class App:
                 raw, f'Пресет возвращён: {self.ctl.workbook.name}; '
                      f'в буфере прежний — нажмите «Копировать»')
 
-    def generate(self):
-        self.hint_box.close()
-        current = self.out_txt.get('1.0', 'end-1c')
-        if self.ctl.needs_confirm_regenerate(current) and not messagebox.askyesno(
-                TITLE, 'Заменить исправленный протокол новым?', icon='warning'):
+    # ---------- живой протокол ----------
+    def tokens(self) -> list[tuple[str, str]]:
+        """Слова записи, привязанные к пунктам принятой подсказкой."""
+        t, out = self.raw_txt, []
+        for tag in t.tag_names():
+            if tag.startswith('tok:'):
+                r = t.tag_ranges(tag)
+                out += [(t.get(r[i], r[i + 1]), tag[4:]) for i in range(0, len(r), 2)]
+        return out
+
+    def _on_raw_modified(self, e=None):
+        if self.raw_txt.edit_modified():
+            self.raw_txt.edit_modified(False)
+            self._schedule_live()
+
+    def _schedule_live(self):
+        for job in (self._live_job, self._unknown_job):
+            if job:
+                self.root.after_cancel(job)
+        self._unknown_job = None
+        self._live_job = self.root.after(self.live_delay, self._live)
+
+    def _live(self):
+        """Черновик протокола после паузы в наборе (без буфера и журнала)."""
+        self._live_job = None
+        if self.live_frozen or self.ctl.needs_confirm_regenerate(self.out_txt.get('1.0', 'end-1c')):
+            self.live_frozen = True     # правку врача не стирать
+            if not self._live_kept:
+                self.live_bar.pack(fill='x', pady=(0, 6), before=self.out_frame)
             return
-        r = self.ctl.generate(self.raw_txt.get('1.0', 'end-1c'))
-        if r.copied:
+        self._live_show()
+
+    def _live_show(self):
+        raw = self.raw_txt.get('1.0', 'end-1c')
+        tokens = self.tokens()
+        r = self.ctl.preview(raw, tokens)
+        self._show_protocol(r.rows)
+        self._status(r.status, r.warnings, r.defaults_line, rows=r.rows)
+        if raw.strip():
+            self._unknown_job = self.root.after(
+                self.unknown_delay, lambda: self._show_unknown(self.ctl.find_unknown(raw, tokens)))
+        else:
+            self._show_unknown([])
+
+    def _live_update_now(self):
+        """«Обновить»: пересобрать протокол по записи (ручная правка уходит)."""
+        self.live_frozen = self._live_kept = False
+        self.live_bar.pack_forget()
+        self._live_show()
+
+    def _live_keep(self):
+        """«Оставить»: правка остаётся, полоска больше не всплывает до Ctrl+Enter."""
+        self._live_kept = True
+        self.live_bar.pack_forget()
+
+    def generate(self):
+        """Ctrl+Enter — подтвердить протокол: в буфер — то, что видно справа (с
+        правками врача), запись — в журнал."""
+        self.hint_box.close()
+        for job in (self._live_job, self._unknown_job):
+            if job:
+                self.root.after_cancel(job)
+        self._live_job = self._unknown_job = None
+        current = self.out_txt.get('1.0', 'end-1c')
+        edited = self.ctl.needs_confirm_regenerate(current)
+        r = self.ctl.generate(self.raw_txt.get('1.0', 'end-1c'), tokens=self.tokens(),
+                              text=current if edited else None)
+        self.live_frozen = self._live_kept = False
+        self.live_bar.pack_forget()
+        if r.copied and edited:
+            self.ctl._last_shown = current          # правка подтверждена — это и есть протокол
+        elif r.copied:
             self._show_protocol(r.rows)
         self._status(r.status, r.warnings, r.defaults_line, rows=r.rows)
         self._hide_learning()
