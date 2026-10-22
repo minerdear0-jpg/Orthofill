@@ -123,7 +123,6 @@ def load_workbook_file(path: str | Path) -> Workbook:
     by_id: dict[str, Item] = {}
     problems: list[str] = []
     warnings: list[str] = []
-    labels: dict[str, list[str]] = {}
     references: list[ReferenceCase] = []
 
     for rownum, (a, b, c, d, e, f) in enumerate(_row_values(ws, header), start=header + 1):
@@ -143,7 +142,6 @@ def load_workbook_file(path: str | Path) -> Workbook:
                 it = Item(code, text, lvl, parent)
                 items.append(it)
                 by_id[code] = it
-                labels.setdefault(text, []).append(code)
         # --- эталоны
         if c is not None and str(c).strip():
             case_id = clean_code(c)
@@ -164,10 +162,6 @@ def load_workbook_file(path: str | Path) -> Workbook:
             by_id[it.parent].children.append(it)
         elif it.parent is not None:
             problems.append(f'код «{it.id}»: нет раздела «{it.parent}»')
-
-    for text, codes in labels.items():
-        if len(codes) > 1:
-            warnings.append(f'одинаковый текст у {", ".join(codes)}: «{text[:60]}»')
 
     if SETTINGS_SHEET in book.sheetnames:
         problems += _read_settings(book[SETTINGS_SHEET], by_id)

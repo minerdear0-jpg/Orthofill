@@ -16,6 +16,7 @@ from .parse import extract_facts
 from .vocab import signature, unknown_words
 from .addition import SearchHit, insert_item, row_text, search_items
 from .journal import Journal
+from .lint import LEVEL_LABELS, lint
 from .presets import PresetStore
 from .workbook import Workbook, WorkbookError, lines_for_reference, load_workbook_file
 from .xlsx_export import export_workbook
@@ -230,6 +231,7 @@ class Controller:
             if not r.missing and not r.extra:
                 details.append('   отличается порядок строк')
         details += [f'Предупреждение: {w}' for w in wb.warnings + rule_warnings(wb)]
+        details += [f'{LEVEL_LABELS[f.level]} классификатора: {f.message}' for f in lint(wb)]
         self.details = details
         n = len(wb.items)
         self.file_status = (f'✓ пунктов: {n} · эталоны {ok}/{len(results)}'
