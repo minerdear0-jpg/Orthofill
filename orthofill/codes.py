@@ -17,19 +17,32 @@ _LETTERS = string.ascii_lowercase
 _KIND = {1: 'раздел', 2: 'группа или пункт', 3: 'вариант'}
 
 
+def inside(code: str, anc: str) -> bool:
+    """code — внутри anc: раздела `4` (всё `4…`) или группы `4b` (варианты `4b1`,
+    `4b10`). У варианта детей нет: `4b10` не внутри `4b1`."""
+    if code == anc:
+        return False
+    if len(anc) == 1:
+        return code[0] == anc
+    return len(anc) == 2 and len(code) > 2 and code[:2] == anc
+
+
 def _descendants(wb: Workbook, code: str) -> list[str]:
-    return [it.id for it in wb.items if it.id != code and it.id.startswith(code)]
+    return [it.id for it in wb.items if inside(it.id, code)]
 
 
-def next_code(wb: Workbook, parent: str | None, level: int) -> str:
+def next_code(wb: Workbook, parent: str | None, level: int, taken: set[str] = frozenset()) -> str:
     """Свободный код нового пункта: раздел — следующая цифра; группа/пункт —
-    первая свободная буква раздела; вариант — наибольший номер группы + 1."""
+    первая свободная буква раздела; вариант — наибольший номер группы + 1.
+    taken — коды, которые нельзя давать заново (удалённые, но ещё в эталонах):
+    иначе строка эталона молча привязалась бы к новому, чужому пункту."""
+    codes = {it.id for it in wb.items} | set(taken)
     if level == 1:
-        return str(max((int(s.id) for s in wb.sections), default=0) + 1)
+        return str(max((int(c) for c in codes if len(c) == 1), default=0) + 1)
     if level == 2:
-        used = {it.id[1] for it in wb.items if len(it.id) >= 2 and it.id[0] == parent}
+        used = {c[1] for c in codes if len(c) >= 2 and c[0] == parent}
         return parent + next(c for c in _LETTERS if c not in used)
-    nums = [int(it.id[2:]) for it in wb.items if len(it.id) > 2 and it.id[:2] == parent]
+    nums = [int(c[2:]) for c in codes if len(c) > 2 and c[:2] == parent]
     return f'{parent}{max(nums, default=0) + 1}'
 
 
@@ -115,10 +128,10 @@ def apply_map(wb: Workbook, m: CodeMap) -> None:
         it.level = 2 if orphan else _level(it.id)
     # перенесённый пункт — после последнего пункта нового родителя
     for it in moved:
-        block = [x for x in wb.items if x is it or x.id.startswith(it.id) and x.id != it.id]
+        block = [x for x in wb.items if x is it or inside(x.id, it.id)]
         rest = [x for x in wb.items if x not in block]
         tail = max((k for k, x in enumerate(rest)
-                    if x.id == it.parent or x.id.startswith(it.parent)), default=len(rest) - 1)
+                    if x.id == it.parent or inside(x.id, it.parent)), default=len(rest) - 1)
         wb.items[:] = rest[:tail + 1] + block + rest[tail + 1:]
     rebuild(wb)
     for it in wb.items:

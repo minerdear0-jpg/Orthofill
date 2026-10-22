@@ -70,3 +70,17 @@ def test_renumber_closes_gaps(wb):
 def test_renumber_follows_output_order(wb):
     apply_map(wb, swap_map('4d1', '4d2', wb))     # 4d2 «верхней» стоит первым
     assert renumber_map(wb, '4d') == {'4d2': '4d1', '4d1': '4d2'}
+
+
+def test_variant_1_is_not_parent_of_10_to_19(wb):
+    assert '4b19' in wb.by_id                     # в order.xlsx у дуг ≥10 вариантов
+    assert rename_map(wb, '4b1', '4b30') == {'4b1': '4b30'}
+    assert swap_map('4b1', '4b2', wb) == {'4b1': '4b2', '4b2': '4b1'}
+    apply_map(wb, swap_map('4b1', '4b2', wb))
+    assert wb.by_id['4b10'].parent == '4b' and '4b10' in [c.id for c in wb.by_id['4b'].children]
+    assert [c.id for c in wb.by_id['4b'].children][:3] == ['4b2', '4b1', '4b3']
+
+
+def test_section_descendants(wb):
+    m = rename_map(wb, '4', '7')
+    assert m['4b12'] == '7b12' and '3a' not in m

@@ -208,3 +208,94 @@ def test_ctrl_o_in_editor_does_not_import(app, monkeypatch):
         keysym, keycode, state, widget = 'Cyrillic_shcha', 32, 4, ed.tree
     app._on_ctrl_key(E())
     assert not called
+
+
+# ---------- итоговая проверка ----------
+def _shown(ed):
+    """Окно редактора на экране, разделитель встал, поля справа пересобраны."""
+    ed.top.deiconify()
+    if not ed.tree.winfo_viewable():
+        ed.tree.wait_visibility()
+    ed.top.after(300)
+    ed.top.update()
+
+
+def _click(ed, code):
+    """Настоящий щелчок мышью по строке дерева (окно должно быть на экране)."""
+    _shown(ed)
+    ed.tree.see(code)
+    ed.top.update()
+    x, y, w, h = ed.tree.bbox(code)
+    ed.tree.event_generate('<ButtonPress-1>', x=x + w // 2, y=y + h // 2)
+    ed.tree.event_generate('<ButtonRelease-1>', x=x + w // 2, y=y + h // 2)
+    ed.top.update()
+
+
+def test_focus_out_commits_to_edited_item(app):
+    ed = app.open_editor('4d1')
+    _shown(ed)
+    ed.text_box.focus_force(); ed.top.update()
+    ed.set_text_field('ПРАВКА')
+    _click(ed, '4d2')
+    assert ed.draft.wb.by_id['4d1'].text == 'ПРАВКА'
+    assert ed.draft.wb.by_id['4d2'].text == 'на нижней челюсти.'
+
+
+def test_code_focus_out_commits_to_edited_item(app):
+    ed = app.open_editor('4d1')
+    _shown(ed)
+    ed.code_entry.focus_force(); ed.top.update()
+    ed.set_code_field('4d9')
+    _click(ed, '4d3')
+    assert '4d9' in ed.draft.wb.by_id and ed.draft.wb.by_id['4d9'].text == 'на верхней челюсти.'
+    assert '4d3' in ed.draft.wb.by_id
+
+
+def test_close_commits_typed_text_and_asks(app, monkeypatch):
+    asked = []
+    monkeypatch.setattr(app, '_choice', lambda t, text, b: asked.append(text) or 'cancel')
+    ed = app.open_editor('4a')
+    ed.set_text_field('Осмотр.')                 # набрано, но не подтверждено
+    ed.close()
+    assert asked and ed.top.winfo_exists()
+
+
+def test_editor_follows_current_preset(app):
+    ed = app.open_editor('4a')
+    other = next(p.id for p in app.ctl.presets.list() if p.id != app.ctl.preset_id)
+    app.switch_to(other)
+    ed2 = app.open_editor('4a')
+    assert ed2.draft.preset_id == other
+
+
+def test_editor_with_unsaved_other_preset_is_not_reused(app, monkeypatch):
+    asked = []
+    monkeypatch.setattr(app, '_choice', lambda t, text, b: asked.append(text) or 'cancel')
+    ed = app.open_editor('4d3')
+    ed.add_variant()
+    first = ed.draft.preset_id
+    other = next(p.id for p in app.ctl.presets.list() if p.id != first)
+    app.switch_to(other)
+    ed2 = app.open_editor('4a')
+    assert asked and 'несохранённ' in asked[0]
+    assert ed2.draft.preset_id == first and ed2.draft.changed
+
+
+def test_save_keeps_hand_edited_protocol(app):
+    app.raw_txt.insert('1.0', 'активация, рабочий')
+    app.generate()
+    app.out_txt.insert('end', '\nмоя строка')
+    ed = app.open_editor('5a')
+    ed.set_text_field('Продолжить лечение.')
+    ed.commit_text()
+    ed.save()
+    assert 'моя строка' in app.out_txt.get('1.0', 'end')
+    assert 'Ctrl+Enter' in app.status_lbl['text']
+
+
+def test_main_close_asks_about_unsaved_editor(app, monkeypatch):
+    monkeypatch.setattr(app, '_choice', lambda *a, **k: 'cancel')
+    ed = app.open_editor('4d3')
+    ed.add_variant()
+    app.close()
+    assert app.root.winfo_exists() and ed.top.winfo_exists()

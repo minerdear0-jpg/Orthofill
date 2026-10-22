@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import filedialog
 
 from .addition import row_text, search_items
+from .codes import inside
 from .lint import JAW_FIX, LEVEL_LABELS
 from .lint import lint
 from .methods import METHOD_LABELS, WHEN_LABELS
@@ -31,6 +32,7 @@ class EditorWindow:
         self.draft = self.ctl.open_draft()
         self._hits: list[str] = []
         self._hit = 0
+        self._props_code: str | None = None     # чьи поля сейчас справа
         self.findings = []
         self.top = top = tk.Toplevel(app.root)
         top.title(f'{TITLE} — пресет «{self.draft.wb.name}»')
@@ -331,16 +333,24 @@ class EditorWindow:
         self.refresh()
         self.select(select if select and self.tree.exists(select) else self.selected())
 
+    def _forget_fields(self):
+        """Поля справа — без записи (отмена, смена черновика): в них прежние значения."""
+        self._props_code = None
+        self._clear_props()
+
     def undo(self):
+        self._forget_fields()
         self.draft.undo()
         self._done()
 
     def redo(self):
+        self._forget_fields()
         self.draft.redo()
         self._done()
 
     def add_item(self):
         """Новая группа/пункт раздела — после выделенной группы (или в конец раздела)."""
+        self._flush()
         code = self.selected()
         if code is None:
             return
@@ -354,6 +364,7 @@ class EditorWindow:
 
     def add_variant(self):
         """Новый вариант — после выделенного варианта или в конец выделенной группы."""
+        self._flush()
         code = self.selected()
         if code is None or self._kind(code) == 'section':
             return
@@ -364,11 +375,13 @@ class EditorWindow:
         self._edit_text_soon()
 
     def move(self, delta: int):
+        self._flush()
         code = self.selected()
         if code and self.draft.move(code, delta):
             self._done(code)
 
     def delete_selected(self, confirm: bool = True):
+        self._flush()
         code = self.selected()
         if code is None:
             return
@@ -397,8 +410,13 @@ class EditorWindow:
             w.destroy()
 
     def _show_props(self):
+        # набранное в полях прежнего пункта — ему же, до того как поля пропадут
+        # (щелчок по другому пункту меняет выделение раньше, чем уходит фокус)
+        if self._commit_pending():
+            self.refresh()
         self._clear_props()
         code = self.selected()
+        self._props_code = code
         if code is None:
             return
         wb, app, p = self.draft.wb, self.app, self.props
@@ -486,7 +504,7 @@ class EditorWindow:
             ttk.Label(p, text=row_text(it, group), wraplength=360, foreground=ACCENT,
                       justify='left').pack(anchor='w')
 
-        subtree = {i.id for i in wb.items if i.id.startswith(code)}
+        subtree = {code} | {i.id for i in wb.items if inside(i.id, code)}
         used = sum(any(c in subtree for c, _ in r.lines) for r in wb.references)
         ttk.Label(p, text=f'есть в эталонах: {used} из {len(wb.references)}', font=app.f_small,
                   foreground=MUTED).pack(anchor='w', pady=(10, 0))
@@ -502,26 +520,47 @@ class EditorWindow:
         self.text_box.delete('1.0', 'end')
         self.text_box.insert('1.0', text)
 
-    def commit_text(self):
-        code = self.selected()
-        if code is None or not self.text_box.winfo_exists():
-            return
+    def _owner(self, widget: str) -> str | None:
+        """Код пункта, чьи поля открыты, если поле ещё существует."""
+        code = self._props_code
+        w = getattr(self, widget, None)
+        if code is None or code not in self.draft.wb.by_id or w is None or not w.winfo_exists():
+            return None
+        return code
+
+    def _after_commit(self, old: str, new: str):
+        """Выделение — у правленого пункта, если его не сменили щелчком."""
+        sel = self.selected()
+        self._done(new if sel in (None, old) else sel)
+
+    def _commit_pending(self) -> bool:
+        """Подтвердить набранное в полях (без перерисовки). True — что-то изменилось."""
+        return any([self._on_words(refresh=False), self.commit_text(refresh=False),
+                    self.commit_code(refresh=False)])
+
+    def commit_text(self, refresh: bool = True) -> bool:
+        code = self._owner('text_box')
+        if code is None:
+            return False
         text = _ws(self.text_field())
-        if text and text != _ws(self.draft.wb.by_id[code].text):
-            self.draft.set_text(code, text)
-            self._done(code)
+        if not text or text == _ws(self.draft.wb.by_id[code].text):
+            return False
+        self.draft.set_text(code, text)
+        if refresh:
+            self._after_commit(code, code)
+        return True
 
     def set_code_field(self, code: str):
         self.code_entry.delete(0, 'end')
         self.code_entry.insert(0, code)
 
-    def commit_code(self):
-        code = self.selected()
-        if code is None or not self.code_entry.winfo_exists():
-            return
+    def commit_code(self, refresh: bool = True) -> bool:
+        code = self._owner('code_entry')
+        if code is None:
+            return False
         new = self.code_entry.get().strip().lower()
         if new == code:
-            return
+            return False
         err = self.draft.set_code(code, new)
         if err and 'уже занят' in err and len(new) == len(code) and new[:-1] == code[:-1] \
                 or err and 'уже занят' in err and len(code) > 2 and new[:2] == code[:2]:
@@ -530,46 +569,58 @@ class EditorWindow:
                                    f'Поменять коды местами?',
                                    [('swap', 'Поменять местами'), ('cancel', 'Отмена')])
             if ans != 'swap':
-                return
+                return False
             self.draft.swap(code, new)
             err = None
         if err:
-            self.code_err.configure(text=err)
-            return
-        self._done(new)
+            if self.code_err.winfo_exists():
+                self.code_err.configure(text=err)
+            return False
+        self._props_code = new
+        if refresh:
+            self._after_commit(code, new)
+        return True
 
     def _renumber(self, code: str):
         self.draft.renumber(code)
         self._done(code)
 
     def _on_method(self):
-        code = self.selected()
+        code = self._props_code
         key = next(k for k, v in METHOD_LABELS.items() if v == self.method_var.get())
         self.draft.set_prop(code, 'method', key)
         self._done(code)
 
     def _on_default(self):
-        code = self.selected()
+        code = self._props_code
         self.draft.set_prop(code, 'default', self._variant_by_label.get(self.default_var.get()))
         self._done(code)
 
     def _on_when(self):
-        code = self.selected()
+        code = self._props_code
         key = next(k for k, v in WHEN_LABELS.items() if v == self.when_var.get())
         self.draft.set_prop(code, 'when', key)
         self._done(code)
 
-    def _on_words(self):
-        code = self.selected()
-        if code is None or not self.words_entry.winfo_exists():
-            return
+    def _on_words(self, refresh: bool = True) -> bool:
+        code = self._owner('words_entry')
+        if code is None:
+            return False
         words = [w.strip() for w in self.words_entry.get().split(',') if w.strip()]
-        if words != self.draft.wb.by_id[code].words:
-            self.draft.set_prop(code, 'words', words)
-            self._done(code)
+        if words == self.draft.wb.by_id[code].words:
+            return False
+        self.draft.set_prop(code, 'words', words)
+        if refresh:
+            self._after_commit(code, code)
+        return True
 
     # ---------- сохранение, закрытие, xlsx ----------
+    def _flush(self):
+        if self._commit_pending():
+            self._done()
+
     def save(self) -> bool:
+        self._flush()
         if not self.draft.changed:
             return True
         broken = [r for r in self.results if not r.ok]
@@ -593,11 +644,13 @@ class EditorWindow:
         self._done()
 
     def _drop_draft(self):
+        self._forget_fields()
         pid = self.draft.preset_id
         self.ctl.draft = None
         self.draft = self.ctl.open_draft(pid)
 
     def close(self):
+        self._flush()
         if self.draft.changed:
             ans = self.app._choice('Закрыть редактор',
                                    f'Есть несохранённые правки: {self.draft.changed}.',
@@ -651,6 +704,7 @@ class EditorWindow:
             and self.save()
 
     def export_path(self, path: Path):
+        self._flush()
         if self.draft.changed and not self._save_first():
             return
         msg = self.ctl.export_xlsx(path, preset_id=self.draft.preset_id)

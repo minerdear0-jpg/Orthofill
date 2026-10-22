@@ -11,7 +11,8 @@ import copy
 from typing import Any
 
 from . import engine
-from .codes import CodeMap, apply_map, code_error, next_code, rebuild, rename_map, renumber_map, swap_map
+from .codes import (CodeMap, apply_map, code_error, inside, next_code, rebuild, rename_map,
+                    renumber_map, swap_map)
 from .presets import PresetStore
 from .workbook import DictEntry, Item, ReferenceCase, Workbook
 
@@ -75,14 +76,13 @@ class Draft:
 
     # ---------- пункты ----------
     def _subtree(self, code: str) -> list[Item]:
-        return [it for it in self.wb.items if it.id == code or
-                (it.id.startswith(code) and it.id != code)]
+        return [it for it in self.wb.items if it.id == code or inside(it.id, code)]
 
     def add(self, parent: str | None, after: str | None, text: str, level: int) -> str:
         """Новый пункт со свободным кодом — после after (с его вариантами) или
         в конец родителя. Возвращает код."""
         self._begin()
-        code = next_code(self.wb, parent, level)
+        code = next_code(self.wb, parent, level, self._reserved())
         item = Item(code, text, level, parent)
         items = self.wb.items
         anchor = after if after in self.wb.by_id else parent
@@ -96,6 +96,14 @@ class Draft:
         items.insert(at, item)
         rebuild(self.wb)
         return code
+
+    def _reserved(self) -> set[str]:
+        """Коды, которые новому пункту давать нельзя: удалённые в этом черновике
+        и те, что ещё стоят в эталонах и словаре."""
+        out = {c for op in self.ops if op[0] == 'del_item' for c in op[1]}
+        out |= {c for r in self.wb.references for c, _ in r.lines if c}
+        out |= {e.code for e in self.wb.dictionary if e.code}
+        return out
 
     def impact(self, code: str) -> tuple[int, int]:
         """(сколько эталонов, сколько слов врача) затронет удаление пункта."""

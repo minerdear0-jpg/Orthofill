@@ -152,3 +152,26 @@ def test_replay_deletes(d):
                            [DictEntry('осм', 'x', '3a'), DictEntry('о', 'осмотр.', '4a'),
                             DictEntry('гиг', 'y', '3f1')])
     assert [r.case_id for r in refs] == ['10'] and [w.word for w in words] == ['гиг']
+
+
+def test_group_with_ten_plus_variants(d):
+    n = len(d.wb.items)
+    assert d.impact('4b1') == (0, 0)
+    d.delete('4b1')
+    assert len(d.wb.items) == n - 1 and '4b10' in d.wb.by_id
+    d.undo()
+    assert d.move('4b1', 1)
+    assert [c.id for c in d.wb.by_id['4b'].children][:3] == ['4b2', '4b1', '4b3']
+    d.undo()
+    code = d.add('4b', '4b1', 'новая', 3)
+    items = [it.id for it in d.wb.items]
+    assert items.index(code) == items.index('4b1') + 1
+
+
+def test_deleted_code_is_not_reused(d):
+    d.delete('4a')
+    assert d.add('4', None, 'Новый пункт', 2) != '4a'
+    d.delete('4d3')
+    assert d.add('4d', None, 'Новый вариант', 3) == '4d4'
+    r = d.check()[0]
+    assert not r.ok and ('4a', 'осмотр.') in r.missing

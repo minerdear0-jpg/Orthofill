@@ -923,20 +923,35 @@ class App:
         """Редактор сохранил пресет: статус, и протокол пересобран без копирования."""
         self._show_file_status()
         raw = self.raw_txt.get('1.0', 'end-1c').strip()
-        if preset_id == self.ctl.preset_id and raw and self.out_txt.get('1.0', 'end-1c').strip():
-            self._regenerate_silently(raw, f'{status} — протокол пересобран; в буфере прежний')
-        else:
+        out = self.out_txt.get('1.0', 'end-1c')
+        if preset_id != self.ctl.preset_id or not raw or not out.strip():
             self._status(status)
+        elif self.ctl.needs_confirm_regenerate(out):     # правки врача не стирать
+            self._status(f'{status}. Протокол правили вручную — Ctrl+Enter пересоберёт его '
+                         f'по изменённому пресету')
+        else:
+            self._regenerate_silently(raw, f'{status} — протокол пересобран; в буфере прежний')
 
     def open_editor(self, select: str | None = None):
         """Редактор пресета — одно окно на программу."""
         from .editor import EditorWindow
         ed = getattr(self, '_editor', None)
         if ed is not None and ed.top.winfo_exists():
-            ed.top.deiconify()
-            ed.top.lift()
-            ed.select(select)
-            return ed
+            if ed.draft.preset_id != self.ctl.preset_id:
+                if ed.draft.changed:      # чужой пресет с правками — не подменять молча
+                    self._choice('Редактор пресета',
+                                 f'Редактор открыт на пресете «{ed.draft.wb.name}» с '
+                                 f'несохранёнными правками. Сохраните или закройте его, '
+                                 f'чтобы править «{self.ctl.workbook.name}».', [('ok', 'Понятно')])
+                    ed.top.deiconify()
+                    ed.top.lift()
+                    return ed
+                ed.top.destroy()          # без правок — открыть на текущем пресете
+            else:
+                ed.top.deiconify()
+                ed.top.lift()
+                ed.select(select)
+                return ed
         self._editor = EditorWindow(self, select)
         return self._editor
 
@@ -972,6 +987,11 @@ class App:
         self.root.attributes('-topmost', self.topmost.get())
 
     def close(self):
+        ed = getattr(self, '_editor', None)
+        if ed is not None and ed.top.winfo_exists():
+            ed.close()                    # несохранённое в редакторе — спросит
+            if ed.top.winfo_exists():
+                return
         j = self.ctl.journal
         j.set_setting('geometry', self.root.geometry())
         j.set_setting('topmost', '1' if self.topmost.get() else '0')
