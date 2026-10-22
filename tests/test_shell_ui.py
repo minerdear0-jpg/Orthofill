@@ -624,3 +624,83 @@ def test_right_without_ghost_moves_cursor(sh):
     sh.raw_txt.mark_set('insert', '1.2')
     _key(sh, 'Right')
     assert sh.raw_txt.index('insert') == '1.3' and _raw(sh) == 'квакозябра'
+
+
+# ---------- 0.5 b7: просмотр вариантов ----------
+@pytest.fixture
+def shw(sh):
+    sh.root.geometry('1200x700')
+    sh.root.update()
+    assert sh.mode == 'wide'
+    return sh
+
+
+def _preview_text(sb):
+    return sb.preview_txt.get('1.0', 'end-1c')
+
+
+def test_carousel_label_distinct(sh):
+    _at_group(sh, ('3', '3e'))
+    _key(sh, 'Tab')
+    sb = sh.shell_box
+    first = sb._rows[0].winfo_children()[0].cget('text')
+    assert first.startswith('…без видимых патологических изменений')
+
+
+def test_preview_shows_with_carousel(shw):
+    sh = shw
+    _at_group(sh, ('3', '3e'))
+    _key(sh, 'Tab')
+    sb = sh.shell_box
+    assert sb.preview_shown and sb.preview.winfo_ismapped()
+    assert _wb(sh).by_id['3e1'].text.strip() in _preview_text(sb)
+    ranges = sb.preview_txt.tag_ranges('diff')
+    assert ranges and sb.preview_txt.get(ranges[0], ranges[1]).startswith('без видимых')
+
+
+def test_preview_follows_selection(shw):
+    sh = shw
+    _at_group(sh, ('3', '3e'))
+    _key(sh, 'Tab')
+    _key(sh, 'Tab')
+    sb = sh.shell_box
+    assert sb.choices[sb.selected][-1] == '3e2'
+    assert _wb(sh).by_id['3e2'].text.strip() in _preview_text(sb)
+    assert '3e1' in sb.preview_sib.cget('text')
+
+
+def test_preview_hidden_after_close(shw):
+    sh = shw
+    _at_group(sh, ('3', '3e'))
+    _key(sh, 'Tab')
+    _key(sh, 'Escape')
+    sb = sh.shell_box
+    assert not sb.preview_shown and not sb.preview.winfo_ismapped()
+
+
+def test_preview_over_drawer(shw):
+    sh = shw
+    sh.set_shell_view('drawer')
+    sh.root.update()
+    _at_group(sh, ('3', '3e'))
+    _key(sh, 'Tab')
+    sb = sh.shell_box
+    assert sb.preview.winfo_ismapped() and sh.out_panel.winfo_ismapped()
+    _key(sh, 'Escape')
+    assert not sb.preview.winfo_ismapped() and sh.out_panel.winfo_ismapped()
+
+
+def test_carousel_left_of_preview(shw):
+    sh = shw
+    _at_group(sh, ('3', '3e'))
+    _key(sh, 'Tab')
+    sb = sh.shell_box
+    sh.root.update()
+    assert sb.frame.winfo_rootx() + sb.frame.winfo_width() <= sb.preview.winfo_rootx() + 1
+
+
+def test_no_preview_when_narrow(sh):
+    _at_group(sh, ('3', '3e'))
+    _key(sh, 'Tab')
+    sb = sh.shell_box
+    assert sh.mode == 'narrow' and sb.list_shown and not sb.preview_shown
