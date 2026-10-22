@@ -49,3 +49,10 @@ def test_add_item_search_skips_cancel(order_xlsx_with):
     from orthofill.addition import search_items
     wb = order_xlsx_with(('4j1', 'нет'))
     assert all(h.code != '4j1' for h in search_items(wb, 'нет'))
+
+
+def test_lint_cancel_rule_default_is_useful(order_xlsx_with):
+    """Умолчание группы — от правила движка (не из столбца): «нет» нужна."""
+    wb = order_xlsx_with(('5d9', 'нет'))
+    assert wb.by_id['5d'].default is None
+    assert not any(f.kind == 'cancel_useless' and f.code == '5d' for f in lint(wb))

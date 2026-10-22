@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .workbook import Item, Workbook
 
@@ -25,6 +25,7 @@ class Resolution:
     common: Path                # общий префикс — до него разворачивает Tab
     choices: list[Path]         # что показать списком
     bad_word: int | None        # первое слово, после которого кандидатов нет
+    rest: list[str] = field(default_factory=list)   # слова, совпавшие ниже common (Tab их сохраняет)
 
 
 def _key(s: str) -> str:
@@ -164,9 +165,10 @@ def resolve(wb: Workbook, done: Path, typed: str, synonyms: dict[str, str]) -> R
         return Resolution(paths, common, [common + (c.id,) for c in nxt], None)
     leaves: list[Path] = []
     choices: list[Path] = []
+    first_at: list[int] = []
     best = 0
     for p in paths:
-        pos, matched, last_at = len(done), 0, -1
+        pos, matched, last_at, at = len(done), 0, -1, []
         for t in toks:
             while pos < len(p) and not _token_matches(t, nodes[p[pos]], p[pos], syn):
                 pos += 1
@@ -174,14 +176,18 @@ def resolve(wb: Workbook, done: Path, typed: str, synonyms: dict[str, str]) -> R
                 break
             matched += 1
             last_at = pos
+            at.append(pos)
         best = max(best, matched)
         if matched == len(toks):
+            if not leaves:
+                first_at = at
             leaves.append(p)
             ch = p[:last_at + 1]
             if ch not in choices:
                 choices.append(ch)
     common = _common(leaves) if leaves else done
-    return Resolution(leaves, common, choices, None if leaves else best)
+    rest = [t for t, a in zip(typed.split(), first_at) if a >= len(common)]
+    return Resolution(leaves, common, choices, None if leaves else best, rest)
 
 
 def _common(paths: list[Path]) -> Path:

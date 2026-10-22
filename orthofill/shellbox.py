@@ -26,6 +26,7 @@ class ShellBox:
         self.list_shown = False
         self._expanded: tuple[str, str] | None = None     # (строка до, строка после) последнего разворота
         self._replace: tuple[int, int] | None = None       # (строка, уровень): список — соседи уровня
+        self._list_line: str | None = None   # список открыт явно (?/Tab) на этой строке
         self._dwell_job = None
         # телеметрия текущей строки (без текста): Tab, ?, набрано символов, «не подходит» показано
         self._stat = {'tabs': 0, 'questions': 0, 'typed': 0, 'bad': False}
@@ -69,6 +70,7 @@ class ShellBox:
     def close(self):
         self._cancel_dwell()
         self._replace = None
+        self._list_line = None
         self.choices, self.selected, self.list_shown = [], -1, False
         self.ghost = ''
         self.tail.place_forget()
@@ -152,7 +154,7 @@ class ShellBox:
             tk.Label(row, text=f'{where}  {path[-1]}'.strip(), font=app.f_small, fg='#8a95a1',
                      bg=bg).pack(side='right', padx=(8, 6))
             for w in (row, *row.winfo_children()):
-                w.bind('<Button-1>', lambda e, k=i: self._accept(self.choices[k]))
+                w.bind('<Button-1>', lambda e, k=i: self._click(k))
         tk.Label(f, text='↑↓ — выбрать · Tab/Enter — принять · Esc — закрыть', font=app.f_small,
                  fg='#8a95a1', bg='#ffffff', anchor='w').pack(fill='x', padx=8, pady=(2, 3))
         box = t.bbox('insert') or (0, 0, 0, 16)
@@ -184,11 +186,20 @@ class ShellBox:
     def _path_text(self, path: Path) -> str:
         return format_path(self.wb, path) + ('' if is_leaf(self.wb, path) else SEP)
 
-    def _accept(self, path: Path) -> bool:
+    def _click(self, k: int) -> bool:
+        """Щелчок по строке списка — как Enter: в списке соседей — замена уровня."""
+        if not (0 <= k < len(self.choices)):
+            return False
+        if self._replace:
+            return self._replace_level(self.choices[k])
+        return self._accept(self.choices[k])
+
+    def _accept(self, path: Path, rest: list[str] | None = None) -> bool:
         n, _ = self._line()
         _, _, _, typed, _ = self._state()
-        self._stat['typed'] += len(typed.strip())     # набрано врачом — до разворота
-        self._set_line(n, self._path_text(path))
+        tail = ' '.join(rest or [])
+        self._stat['typed'] += max(0, len(typed.strip()) - len(tail))   # набрано — до разворота
+        self._set_line(n, self._path_text(path) + tail)
         self.close()
         self.text.focus_set()
         self.update()
@@ -226,6 +237,7 @@ class ShellBox:
             ch = [done + (c.id,) for c in children_of(self.wb, done[-1] if done else None)]
         if ch:
             self._show_list(ch, 0 if typed.strip() == '' else -1)
+            self._list_line = line
         return bool(ch)
 
     # ---------- клавиши ----------
@@ -245,9 +257,10 @@ class ShellBox:
             if len(r.leaves) == 1:
                 self._accept(r.leaves[0])
             elif r.leaves and len(r.common) > len(done):
-                self._accept(r.common)
+                self._accept(r.common, r.rest)          # неиспользованные слова — дальше в строке
             elif r.leaves:
                 self._show_list(r.choices)
+                self._list_line = line
                 self._track('ambiguous', count=len(r.choices))
             return 'break'
         self._branches()
@@ -274,8 +287,9 @@ class ShellBox:
                 self._accept(r.leaves[0])
                 self._finish()
                 return 'break'
-        self._branches()
-        return 'break'
+        # нечего показать (строка не понята) — обычный перенос: строка останется
+        # непонятой (предупреждение), но врач не застревает
+        return 'break' if self._branches() else None
 
     def _escape(self, e):
         if self.on() and self.list_shown:
@@ -310,6 +324,8 @@ class ShellBox:
             return None
         if e.keysym != 'BackSpace':
             self._expanded = None
+        if self.list_shown and self._list_line is not None and self._line()[1] == self._list_line:
+            return None         # отпускание клавиш после ?/Tab (Shift раньше «7») — список не трогать
         self.update()
         return None
 

@@ -107,3 +107,15 @@ def test_controller_shell_mode(ctl, order_xlsx, tmp_path):
     assert not ctl.shell_mode
     ctl._activate(a)
     assert ctl.shell_mode
+
+
+def test_shell_notes_do_not_feed_comma_history(ctl, order_xlsx):
+    ctl.import_xlsx(order_xlsx)
+    ctl.set_shell_mode(True)
+    line = _note(ctl.workbook, ('4', '4b', '4b5'))
+    for _ in range(3):
+        ctl.generate(line + '\n' + _note(ctl.workbook, ('4', '4f', '4f1')))
+    ctl.set_shell_mode(False)
+    assert ctl.continuation('Леч') == ''
+    assert 'челюсти' not in ctl.journal.raw_words(ctl.preset_id)
+    assert not any('›' in n for n in ctl.journal.raw_notes(ctl.preset_id))

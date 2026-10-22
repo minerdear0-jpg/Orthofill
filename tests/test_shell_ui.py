@@ -260,3 +260,60 @@ def test_bad_word_event_once(sh, monkeypatch):
     _type(sh, 'эластики кв')
     _type(sh, 'а')
     assert sum(1 for e, d in seen if e == 'shell' and d.get('action') == 'bad_word') == 1
+
+
+# ---------- итоговая проверка 0.5b1 ----------
+def test_tab_keeps_unused_words(sh):
+    _type(sh, 'верх 16')
+    _key(sh, 'Tab')
+    assert _raw(sh) == format_path(_wb(sh), ('4', '4b')) + ' › 16'
+    assert sh.shell_box.list_shown and len(sh.shell_box.choices) == 5
+
+
+def test_question_list_survives_key_release(sh):
+    _type(sh, format_path(_wb(sh), ('4', '4f')) + ' › ')
+    _key(sh, 'KeyPress', keysym='question')
+    _key(sh, 'KeyRelease', keysym='7')          # Shift отпущен раньше «7»
+    assert sh.shell_box.list_shown
+
+
+def test_enter_on_not_understood_line_breaks(sh):
+    _type(sh, 'квакозябра')
+    _key(sh, 'Return')
+    assert _raw(sh) == 'квакозябра\n'
+
+
+def test_click_in_siblings_keeps_tail(sh):
+    _line_at(sh, ('4', '4b', '4b5'))
+    _key(sh, 'Left')
+    _key(sh, 'Left')
+    _dwell(sh)
+    sb = sh.shell_box
+    k = [c[-1] for c in sb.choices].index('4c')
+    sb._click(k)
+    assert _raw(sh) == format_path(_wb(sh), ('4', '4c')) + ' › '
+    sb_line = _raw(sh)
+    _line2 = sb_line
+    assert _line2.endswith(' › ')
+    # тот же уровень на листе: щелчок по 4b18 — путь целиком, не обрезан
+    sh.raw_txt.delete('1.0', 'end')
+    _line_at(sh, ('4', '4b', '4b5'))
+    _key(sh, 'Left')
+    _dwell(sh)
+    sb._click([c[-1] for c in sb.choices].index('4b18'))
+    assert _raw(sh) == format_path(_wb(sh), ('4', '4b', '4b18'))
+
+
+def test_no_phrase_offer_and_no_learning_in_shell(sh, monkeypatch):
+    offered = []
+    monkeypatch.setattr(sh, 'phrase_bar', type('B', (), {'pack': lambda *a, **k: offered.append(1),
+                                                         'pack_forget': lambda *a, **k: None})())
+    sh._offer_phrase(format_path(_wb(sh), ('4', '4f', '4f1')))
+    assert not offered
+    asked = []
+    monkeypatch.setattr(sh, '_ask_learning', lambda *a: asked.append(a))
+    _type(sh, 'квакозябра')
+    sh.add_entry.insert(0, 'изгиб')
+    sh._on_add_query()
+    sh._add_selected(0)
+    assert not asked

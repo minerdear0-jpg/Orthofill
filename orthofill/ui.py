@@ -906,6 +906,8 @@ class App:
     def _offer_phrase(self, raw: str):
         from .phrases import parse_template, render
         self.phrase_bar.pack_forget()
+        if self.ctl.shell_mode:           # .фразы — режим «через запятую»
+            return
         prop = self.ctl.proposal(raw) if raw.strip() else None
         self._phrase_prop = prop
         if prop:
@@ -1037,7 +1039,7 @@ class App:
         self._status(res.status)
         if res.learned:
             self._show_learned(word)
-        else:
+        elif not self.ctl.shell_mode:     # в оболочке слов нет — строки-пути
             self._ask_learning(res.code, res.candidates)
 
     def _bind_word(self, word: str, code: str):
