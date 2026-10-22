@@ -2,8 +2,9 @@
 
 В exe — из orthofill/_build.py, который пишет build.ps1 перед сборкой.
 При запуске из папки проекта — короткий хеш git (+изм, если есть
-незакоммиченные правки); без установленного git — хеш из файлов .git.
-Иначе — «dev»."""
+незакоммиченные правки); без установленного git — хеш из файлов .git;
+из ZIP-архива GitHub (ни git, ни .git) — хеш, который GitHub подставил в
+orthofill/_commit.txt (атрибут export-subst в .gitattributes). Иначе — «dev»."""
 from __future__ import annotations
 
 import subprocess
@@ -36,6 +37,16 @@ def git_head_from_files(root: Path) -> str | None:
     return None
 
 
+def head_from_archive(root: Path) -> str | None:
+    """Хеш из orthofill/_commit.txt: в ZIP с GitHub там код коммита, в рабочей
+    папке — неподставленный шаблон «$Format:%h$»."""
+    try:
+        sha = (Path(root) / 'orthofill' / '_commit.txt').read_text(encoding='utf-8').strip()
+    except OSError:
+        return None
+    return sha if sha and not sha.startswith('$') else None
+
+
 def _git_command(root: Path) -> str | None:
     flags = 0x08000000 if sys.platform == 'win32' else 0   # CREATE_NO_WINDOW
     try:
@@ -65,4 +76,5 @@ def build_id() -> str:
     if getattr(sys, 'frozen', False):
         return 'dev'
     root = Path(__file__).resolve().parent.parent
-    return _git_command(root) or git_head_from_files(root) or 'dev'
+    return (_git_command(root) or git_head_from_files(root) or head_from_archive(root)
+            or 'dev')

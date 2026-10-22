@@ -100,6 +100,25 @@ def test_build_id_without_git_executable(monkeypatch):
         raise FileNotFoundError(2, "Не удается найти указанный файл")
     monkeypatch.setattr(buildinfo.subprocess, "run", missing)
     buildinfo.build_id.cache_clear()
-    expected = buildinfo.git_head_from_files(ROOT) or "dev"
+    expected = buildinfo.git_head_from_files(ROOT) or buildinfo.head_from_archive(ROOT) or "dev"
     assert buildinfo.build_id() == expected
     buildinfo.build_id.cache_clear()
+
+
+def test_head_from_archive_file(tmp_path):
+    """ZIP с GitHub (без git и .git): хеш, подставленный GitHub в orthofill/_commit.txt."""
+    from orthofill.buildinfo import head_from_archive
+    (tmp_path / 'orthofill').mkdir()
+    f = tmp_path / 'orthofill' / '_commit.txt'
+    f.write_text('a6b2943\n', encoding='utf-8')
+    assert head_from_archive(tmp_path) == 'a6b2943'
+    f.write_text('$Format:%h$\n', encoding='utf-8')     # не из архива — не подставлено
+    assert head_from_archive(tmp_path) is None
+    assert head_from_archive(tmp_path / 'нет') is None
+
+
+@pytest.mark.skipif(not (ROOT / ".git").exists(), reason="в ZIP-архиве шаблон уже подставлен")
+def test_archive_file_is_substituted_by_git():
+    attrs = (ROOT / '.gitattributes').read_text(encoding='utf-8')
+    assert 'orthofill/_commit.txt export-subst' in attrs
+    assert (ROOT / 'orthofill' / '_commit.txt').read_text(encoding='utf-8').strip() == '$Format:%h$'

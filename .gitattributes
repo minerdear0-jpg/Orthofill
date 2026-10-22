@@ -1,3 +1,4 @@
 *.ps1 text eol=crlf
 *.xlsx binary
 *.ico binary
+orthofill/_commit.txt export-subst
