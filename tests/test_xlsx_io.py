@@ -65,3 +65,61 @@ def test_header_missing_message(tmp_path):
     p = _sheet(tmp_path, [(None, "Calibri"), ("1", "Жалобы")])
     with pytest.raises(WorkbookError, match="в колонке A должно стоять ID_CLASS"):
         load_workbook_file(p)
+
+
+# ---------- 0.2 beta 5: логика — столбцы F, G, H ----------
+def _logic_wb(order_xlsx):
+    wb = load_workbook_file(order_xlsx)
+    wb.by_id["4f"].combine = "and"
+    wb.by_id["4h1"].when = "condition"
+    wb.by_id["4h1"].condition = {"all": [{"field": "2b", "is": "2b2"}]}
+    wb.by_id["4a"].condition = {"any": [{"field": "4e", "mentioned": True},
+                                        {"field": "2b", "is": "2b1", "not": True}]}
+    wb.not_together = [("4h1", "4h2")]
+    return wb
+
+
+def test_logic_survives_export_import(tmp_path, order_xlsx):
+    wb = _logic_wb(order_xlsx)
+    export_workbook(wb, tmp_path / "x.xlsx")
+    back = load_workbook_file(tmp_path / "x.xlsx")
+    assert not back.problems and not back.warnings
+    assert back.by_id["4f"].combine == "and" and back.by_id["4h1"].when == "condition"
+    assert back.by_id["4h1"].condition == wb.by_id["4h1"].condition
+    assert back.by_id["4a"].condition == wb.by_id["4a"].condition
+    assert back.not_together == [("4h1", "4h2")]
+    st = openpyxl.load_workbook(tmp_path / "x.xlsx")["Настройки"]
+    assert [c.value for c in st[1]][5:8] == ["Сочетание", "Условие", "Не вместе с"]
+    rows = {r[0]: r for r in st.iter_rows(min_row=2, values_only=True)}
+    assert rows["4h1"][6] == "2b = 2b2" and rows["4h1"][7] == "4h2" and rows["4h2"][7] == "4h1"
+    assert rows["4f"][5] == "И"
+
+
+def _settings_rows(tmp_path, order_xlsx, rows):
+    out = tmp_path / "s.xlsx"
+    export_workbook(load_workbook_file(order_xlsx), out)
+    xl = openpyxl.load_workbook(out)
+    ws = xl["Настройки"]
+    while ws.max_row < 11:
+        ws.append([None])
+    for r in rows:
+        ws.append(r)
+    xl.save(out)
+    return load_workbook_file(out)
+
+
+def test_condition_error_names_cell(tmp_path, order_xlsx):
+    wb = _settings_rows(tmp_path, order_xlsx, [["4h1", None, "по условию", None, None, None, "4x = 4x1"]])
+    assert any(p.startswith("Настройки!G12: не знаю код 4x") for p in wb.problems)
+
+
+def test_bad_combine_and_pair_codes(tmp_path, order_xlsx):
+    wb = _settings_rows(tmp_path, order_xlsx, [["4f", None, None, None, None, "ВСЕ", None, "9z"]])
+    assert any(p.startswith("Настройки!F12") for p in wb.problems)
+    assert any(p.startswith("Настройки!H12") and "9z" in p for p in wb.problems)
+
+
+def test_asymmetric_pair_completed(tmp_path, order_xlsx):
+    wb = _settings_rows(tmp_path, order_xlsx, [["4h1", None, None, None, None, None, None, "4h2"]])
+    assert wb.not_together == [("4h1", "4h2")] and not wb.problems
+    assert any("дополнена" in w for w in wb.warnings)

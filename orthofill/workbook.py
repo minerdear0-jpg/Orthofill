@@ -13,7 +13,9 @@ from .methods import METHOD_LABELS, WHEN_LABELS
 HEADER = 'ID_CLASS'
 SETTINGS_SHEET = 'Настройки'
 DICTIONARY_SHEET = 'Словарь'
-SETTINGS_HEADER = ['Код', 'Способ выбора', 'Когда в протоколе', 'По умолчанию', 'Слова']
+SETTINGS_HEADER = ['Код', 'Способ выбора', 'Когда в протоколе', 'По умолчанию', 'Слова',
+                   'Сочетание', 'Условие', 'Не вместе с']
+COMBINE_LABELS = {'and': 'И'}       # пусто или «ИЛИ» — один вариант
 DICTIONARY_HEADER = ['Слово', 'Пункт', 'Код', 'Добавлено', 'Сработало раз']
 _CODE_RE = re.compile(r'\d|\d[a-zа-я]|\d[a-zа-я]\d+')
 
@@ -167,7 +169,11 @@ def load_workbook_file(path: str | Path) -> Workbook:
             problems.append(f'код «{it.id}»: нет раздела «{it.parent}»')
 
     if SETTINGS_SHEET in book.sheetnames:
-        problems += _read_settings(book[SETTINGS_SHEET], by_id)
+        found, notes, pairs = _read_settings(book[SETTINGS_SHEET], by_id)
+        problems += found
+        warnings += notes
+    else:
+        pairs = []
     dictionary = (_read_dictionary(book[DICTIONARY_SHEET])
                   if DICTIONARY_SHEET in book.sheetnames else [])
 
@@ -183,6 +189,7 @@ def load_workbook_file(path: str | Path) -> Workbook:
         name=path.stem,
         source=path.name,
         dictionary=dictionary,
+        not_together=pairs,
     )
     normalize_references(wb)
     return wb
@@ -192,13 +199,16 @@ def _split_words(value) -> list[str]:
     return [w.strip() for w in re.split(r'[,;\n]', str(value or '')) if w.strip()]
 
 
-def _read_settings(ws, by_id: dict[str, Item]) -> list[str]:
-    """Лист «Настройки»: Код | Способ выбора | Когда в протоколе | По умолчанию | Слова."""
+def _read_settings(ws, by_id: dict[str, Item]) -> tuple[list[str], list[str], list[tuple[str, str]]]:
+    """Лист «Настройки»: Код | Способ выбора | Когда в протоколе | По умолчанию |
+    Слова | Сочетание | Условие | Не вместе с → (ошибки, предупреждения, пары)."""
+    from .logic import parse
     method_of = {v: k for k, v in METHOD_LABELS.items()}
     when_of = {v: k for k, v in WHEN_LABELS.items()}
-    problems = []
-    for rownum, row in enumerate(ws.iter_rows(min_row=2, max_col=5, values_only=True), start=2):
-        code, method, when, default, words = tuple(row) + (None,) * (5 - len(row))
+    problems: list[str] = []
+    listed: dict[str, set[str]] = {}
+    for rownum, row in enumerate(ws.iter_rows(min_row=2, max_col=8, values_only=True), start=2):
+        code, method, when, default, words, combine, cond, apart = tuple(row) + (None,) * (8 - len(row))
         if code is None or not str(code).strip():
             continue
         where = f'{SETTINGS_SHEET}, строка {rownum}'
@@ -213,13 +223,38 @@ def _read_settings(ws, by_id: dict[str, Item]) -> list[str]:
                 it.method = method_of[str(method).strip()]
         if when:
             if str(when).strip() not in when_of:
-                problems.append(f'{where}: «{when}» — нужно «всегда» или «если упомянут»')
+                problems.append(f'{where}: «{when}» — нужно «всегда», «если упомянут» или «по условию»')
             else:
                 it.when = when_of[str(when).strip()]
         if default:
             it.default = clean_code(default)
         it.words = _split_words(words)
-    return problems
+        cell = lambda col: f'{SETTINGS_SHEET}!{col}{rownum}'   # noqa: E731
+        if combine is not None and str(combine).strip():
+            c = str(combine).strip().upper()
+            if c not in ('И', 'ИЛИ'):
+                problems.append(f'{cell("F")}: «{combine}» — нужно «И» или «ИЛИ»')
+            else:
+                it.combine = 'and' if c == 'И' else None
+        if cond is not None and str(cond).strip():
+            try:
+                it.condition = parse(str(cond), set(by_id))
+            except ValueError as e:
+                problems.append(f'{cell("G")}: {e}')
+        for other in _split_words(apart):
+            o = clean_code(other)
+            if o not in by_id or o == it.id:
+                problems.append(f'{cell("H")}: пункта «{o}» нет в классификаторе' if o != it.id
+                                else f'{cell("H")}: пункт не может быть «не вместе» сам с собой')
+            else:
+                listed.setdefault(it.id, set()).add(o)
+    pairs, notes = set(), []
+    for a, others in listed.items():
+        for b in others:
+            pairs.add(tuple(sorted((a, b))))
+            if a not in listed.get(b, set()):
+                notes.append(f'пара «не вместе» {a} ↔ {b} дополнена (была только у {a})')
+    return problems, notes, sorted(pairs)
 
 
 def _read_dictionary(ws) -> list[DictEntry]:

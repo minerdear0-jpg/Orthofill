@@ -7,7 +7,8 @@ from pathlib import Path
 from openpyxl import Workbook as XlBook
 
 from .methods import METHOD_LABELS, WHEN_LABELS
-from .workbook import (DICTIONARY_HEADER, DICTIONARY_SHEET, HEADER, SETTINGS_HEADER,
+from .logic import format as format_condition
+from .workbook import (COMBINE_LABELS, DICTIONARY_HEADER, DICTIONARY_SHEET, HEADER, SETTINGS_HEADER,
                        SETTINGS_SHEET, Workbook)
 
 
@@ -32,19 +33,27 @@ def export_workbook(wb: Workbook, path: Path) -> None:
 
     st = xl.create_sheet(SETTINGS_SHEET)
     st.append(SETTINGS_HEADER)
+    partners: dict[str, list[str]] = {}
+    for a, b in wb.not_together:            # пара — в обеих строках
+        partners.setdefault(a, []).append(b)
+        partners.setdefault(b, []).append(a)
     for it in wb.items:
         method = METHOD_LABELS.get(it.method) if it.children and it.method else None
         when = WHEN_LABELS.get(it.when) if it.when else None
-        if method or when or it.default or it.words:
-            st.append([_num(it.id), method, when, it.default, ', '.join(it.words) or None])
+        combine = COMBINE_LABELS.get(it.combine) if it.combine else None
+        cond = format_condition(it.condition) or None
+        apart = ', '.join(partners.get(it.id, [])) or None
+        if method or when or it.default or it.words or combine or cond or apart:
+            st.append([_num(it.id), method, when, it.default, ', '.join(it.words) or None,
+                       combine, cond, apart])
 
     dt = xl.create_sheet(DICTIONARY_SHEET)
     dt.append(DICTIONARY_HEADER)
     for e in wb.dictionary:
         dt.append([e.word, e.item_text, e.code or None, e.added or None, e.hits])
 
-    for sheet, widths in ((ws, (10, 60, 12, 50, 14, 60)), (st, (8, 34, 18, 14, 30)),
+    for sheet, widths in ((ws, (10, 60, 12, 50, 14, 60)), (st, (8, 34, 18, 14, 30, 12, 34, 16)),
                           (dt, (18, 50, 8, 14, 14))):
-        for col, w in zip('ABCDEF', widths):
+        for col, w in zip('ABCDEFGH', widths):
             sheet.column_dimensions[col].width = w
     xl.save(path)
