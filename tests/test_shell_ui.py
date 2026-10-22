@@ -355,7 +355,8 @@ def test_prediction_ghost_on_empty_line(sh):
 
 
 def test_tab_accepts_prediction_group(sh):
-    _history(sh, [('2', '2b', '2b2'), ('2', '2c', '2c3')], [('2', '2b', '2b2'), ('2', '2c', '2c3')])
+    _history(sh, [('2', '2b', '2b2'), ('2', '2c', '2c3')],
+             [('2', '2b', '2b2'), ('2', '2c', '2c3'), ('4', '4f', '4f1')])   # разные записи
     _finish_line(sh, ('2', '2b', '2b2'))
     _key(sh, 'Tab')
     assert _raw(sh).split('\n')[1] == format_path(_wb(sh), ('2', '2c')) + ' › '
@@ -400,7 +401,8 @@ def test_enter_ignores_prediction(sh):
 
 
 def test_lists_ranked(sh):
-    _history(sh, *([[('4', '4b', '4b18')]] * 3))
+    _history(sh, [('4', '4b', '4b18')], [('4', '4b', '4b18'), ('4', '4f', '4f1')],
+             [('4', '4b', '4b18'), ('4', '4f', '4f2')])                       # разные записи
     _type(sh, format_path(_wb(sh), ('4', '4b')) + ' › ')
     _key(sh, 'KeyPress', keysym='question')
     assert sh.shell_box.choices[0][-1] == '4b18'
@@ -428,3 +430,67 @@ def test_modifier_release_keeps_dwell(sh):
     for ks in ('Alt_L', 'ISO_Next_Group', 'Caps_Lock', 'a'):
         sh.raw_txt.event_generate('<KeyRelease>', keysym=ks, when='now')
     assert sh.shell_box._dwell_job is not None
+
+
+# ---------- итоговая проверка 0.5b2 ----------
+def test_arrow_up_refreshes_prediction(sh):
+    wb = _wb(sh)
+    sh.raw_txt.insert('1.0', format_path(wb, ('2', '2b', '2b2')) + '\n\n'
+                      + format_path(wb, ('4', '4b', '4b5')) + '\n')
+    sh.raw_txt.mark_set('insert', '4.0')
+    sh.shell_box.update()
+    assert sh.shell_box.prediction.path[1] != '2c'
+    sh.raw_txt.mark_set('insert', '2.0')                 # стрелкой вверх
+    _key(sh, 'KeyRelease', keysym='Up')
+    assert sh.shell_box.prediction.path == ('2', '2c')
+    sh.raw_txt.mark_set('insert', '4.0')
+    _key(sh, 'Tab')                                      # Tab сам сверяет строку
+    assert sh.raw_txt.get('4.0', '4.end') != format_path(wb, ('2', '2c')) + ' › '
+
+
+def test_enter_moves_ghost(sh):
+    _finish_line(sh, ('2', '2b', '2b2'))
+    _key(sh, 'Return')
+    sh.root.update()
+    sb = sh.shell_box
+    assert sb._pred_line == 3
+
+
+def test_question_pick_prediction_logged_accepted(sh, monkeypatch):
+    seen = []
+    _finish_line(sh, ('2', '2b', '2b2'))
+    monkeypatch.setattr(sh.ctl, 'track', lambda e, **d: seen.append((e, d)))
+    _key(sh, 'KeyPress', keysym='question')
+    _key(sh, 'Tab')
+    out = [d['outcome'] for e, d in seen if e == 'shell' and d.get('action') == 'predict']
+    assert out == ['accepted']
+
+
+def test_ignored_logged_once(sh, monkeypatch):
+    seen = []
+    _finish_line(sh, ('2', '2b', '2b2'))
+    monkeypatch.setattr(sh.ctl, 'track', lambda e, **d: seen.append((e, d)))
+    _type(sh, 'д')
+    sh.raw_txt.delete('insert -1c', 'insert')
+    sh.shell_box.update()
+    _type(sh, 'д')
+    out = [d['outcome'] for e, d in seen if e == 'shell' and d.get('action') == 'predict']
+    assert out == ['ignored']
+
+
+def test_group_from_question_list_opens_branches(sh):
+    _finish_line(sh, ('2', '2b', '2b2'))
+    _key(sh, 'KeyPress', keysym='question')
+    _key(sh, 'Tab')                                     # первый — группа «Этап»
+    sb = sh.shell_box
+    assert sb.list_shown and sb.choices[0][:2] == ('2', '2c')
+
+
+def test_siblings_ranked(sh):
+    _history(sh, [('4', '4b', '4b18')], [('4', '4b', '4b18'), ('4', '4f', '4f1')],
+             [('4', '4b', '4b18'), ('4', '4f', '4f2')])
+    _line_at(sh, ('4', '4b', '4b5'))
+    _key(sh, 'Left')
+    _siblings(sh)
+    sb = sh.shell_box
+    assert sb.choices[0][-1] == '4b18' and sb.choices[sb.selected][-1] == '4b5'

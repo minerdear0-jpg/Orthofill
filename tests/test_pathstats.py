@@ -18,7 +18,7 @@ def _note(wb, *paths):
 def test_shell_lines_counted(wb):
     a = _note(wb, ('2', '2b', '2b2'), ('4', '4b', '4b5'))
     b = _note(wb, ('2', '2b', '2b2'))
-    entries = [(a, None), (a, None), (b, None), (b, None),
+    entries = [(a, None), (b, None), (a, None), (b, None),
                (_note(wb, ('4', '4f', '4f1')), None)]
     st = build_stats(wb, entries)
     assert st.notes == 5 and st.count['4b5'] == 2 and st.count['4b'] == 2 and st.count['2'] == 4
@@ -42,12 +42,62 @@ def test_stats_skip_missing_codes(wb):
 def test_stats_cached(ctl, order_xlsx, monkeypatch):
     import orthofill.pathstats as ps
     ctl.import_xlsx(order_xlsx)
-    calls = []
-    real = ps.build_stats
-    monkeypatch.setattr(ps, 'build_stats', lambda *a: calls.append(1) or real(*a))
-    ctl.path_stats()
-    ctl.path_stats()
-    assert len(calls) == 1
     ctl.generate('лигатурная')
+    calls = []
+    real = ps.note_codes
+    monkeypatch.setattr(ps, 'note_codes', lambda *a, **k: calls.append(1) or real(*a, **k))
     ctl.path_stats()
-    assert len(calls) == 2
+    n = len(calls)
+    ctl.path_stats()
+    assert n >= 1 and len(calls) == n          # без новых записей — ничего не разбирается
+    ctl.generate('лигатурная, лиса')
+    ctl.path_stats()
+    assert len(calls) > n
+
+
+def _bulk(ctl, n, raw='лигатурная, перепел', copied='скопировано'):
+    from datetime import datetime
+    ctl.journal._db.executemany(
+        'INSERT INTO entries (created_at, raw, generated, copied_text, preset_id) VALUES (?,?,?,?,?)',
+        [(datetime.now().isoformat(), f'{raw}, явка {i % 7 + 2} нед', '', copied, ctl.preset_id)
+         for i in range(n)])
+    ctl.journal._db.commit()
+
+
+def test_stats_never_block_long(ctl, order_xlsx):
+    """Итоговая проверка: 2000 записей — ~10 с пересчёта на нажатие. Теперь
+    частями: каждый вызов — не дольше бюджета, потом досчитывается."""
+    import time
+    ctl.import_xlsx(order_xlsx)
+    _bulk(ctl, 120)
+    t0 = time.perf_counter()
+    st = ctl.path_stats()
+    assert time.perf_counter() - t0 < 0.25
+    for _ in range(200):
+        if not ctl.path_stats_pending():
+            break
+        ctl.path_stats()
+    st = ctl.path_stats()
+    assert not ctl.path_stats_pending() and st.notes == 120 and st.count['4f1'] == 120
+
+
+def test_new_entry_is_incremental(ctl, order_xlsx, monkeypatch):
+    import orthofill.pathstats as ps
+    ctl.import_xlsx(order_xlsx)
+    _bulk(ctl, 30)
+    while ctl.path_stats_pending():
+        ctl.path_stats()
+    calls = []
+    real = ps.note_codes
+    monkeypatch.setattr(ps, 'note_codes', lambda *a, **k: calls.append(1) or real(*a, **k))
+    ctl.generate('лигатурная, лиса')
+    ctl.path_stats()
+    assert len(calls) == 1                     # только новая запись
+
+
+def test_repeated_confirmation_counts_once(wb):
+    from orthofill.shell import format_path
+    line = format_path(wb, ('4', '4f', '4f1'))
+    st = build_stats(wb, [(line, None), (line, None), (line, 'x'),
+                          (format_path(wb, ('4', '4f', '4f2')), None)])
+    assert st.notes == 2 and st.count['4f1'] == 1

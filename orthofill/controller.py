@@ -401,22 +401,61 @@ class Controller:
             return shell_protocol(self.workbook, raw)
         return build_protocol(self.workbook, raw, list(tokens))
 
+    STATS_BUDGET = 0.03     # с — столько разбора истории за один вызов (окно не ждёт)
+
     def path_stats(self):
-        """Обычный набор врача для пресета — пересчёт только при новой записи или
-        другом пресете."""
+        """Обычный набор врача для пресета. Каждая запись разбирается один раз и
+        запоминается; новые — частями, не дольше STATS_BUDGET за вызов (длинная
+        история досчитывается за несколько нажатий/тиков, окно не замирает)."""
         from . import pathstats
         wb = self.workbook
         if wb is None:
             return pathstats.PathStats()
-        n = self.journal._db.execute('SELECT COUNT(*), MAX(copied_at) FROM entries'
-                                     ' WHERE preset_id IS ?', (self.preset_id,)).fetchone()
-        key = (self.preset_id, wb.sha256, n[0], n[1], id(wb))
-        cached = self.__dict__.get('_stats_cache')
-        if cached and cached[0] == key:
-            return cached[1]
-        st = pathstats.build_stats(wb, self.journal.entries_for_stats(self.preset_id))
-        self._stats_cache = (key, st)
-        return st
+        ps = self.__dict__.get('_pst')
+        if ps is None or ps['wb'] is not wb:
+            ps = self._pst = {'wb': wb, 'codes': {}, 'rows': [], 'dirty': True,
+                              'stats': pathstats.PathStats(), 'stale': True, 'base': None}
+        if ps['dirty']:
+            ps['rows'] = self.journal.entries_for_stats(self.preset_id)
+            ps['dirty'], ps['stale'] = False, True
+        todo = [(i, raw, cp) for i, raw, cp in ps['rows'] if (i, bool(cp)) not in ps['codes']]
+        if todo:
+            if ps['base'] is None:
+                ps['base'] = pathstats._base(wb)
+            end = time.perf_counter() + self.STATS_BUDGET
+            for i, raw, cp in todo:
+                ps['codes'][(i, bool(cp))] = pathstats.note_codes(wb, raw, cp, ps['base'])
+                ps['stale'] = True
+                if time.perf_counter() > end:
+                    break
+        if ps['stale']:
+            st = pathstats.PathStats()
+            runs: list[list[tuple[int, bool]]] = []     # подряд одна и та же запись — одна
+            prev = None
+            for i, raw, cp in ps['rows']:
+                key = (raw or '').strip()
+                if runs and key == prev:
+                    runs[-1].append((i, bool(cp)))
+                else:
+                    runs.append([(i, bool(cp))])
+                prev = key
+            for run in runs:
+                k = next((k for k in run if k[1]), run[0])        # с копией — подтверждена
+                if k in ps['codes']:
+                    pathstats.add_codes(st, wb, ps['codes'][k])
+            ps['stats'], ps['stale'] = st, False
+        return ps['stats']
+
+    def path_stats_pending(self) -> bool:
+        ps = self.__dict__.get('_pst')
+        if ps is None or ps['wb'] is not self.workbook or ps['dirty']:
+            return self.workbook is not None
+        return any((i, bool(cp)) not in ps['codes'] for i, raw, cp in ps['rows'])
+
+    def _stats_dirty(self) -> None:
+        ps = self.__dict__.get('_pst')
+        if ps is not None:
+            ps['dirty'] = True
 
     def _shell_unknown(self, raw: str) -> list[tuple[int, int, str]]:
         """Непонятые строки оболочки — целиком."""
@@ -475,6 +514,7 @@ class Controller:
         self.last_copy_edited = False
         self.last_entry_id = self.journal.log_generate(raw, p, self.workbook.sha256,
                                                        self.preset_id)
+        self._stats_dirty()
         self._last_shown = p.text
         edited = text is not None and text.strip() != p.text.strip()
         if copy and edited:
@@ -482,6 +522,7 @@ class Controller:
         elif copy:
             self.clipboard(p.text)
             self.journal.log_copy(self.last_entry_id, p.text)
+            self._stats_dirty()
         if p.dictionary_hits:
             self.presets.count_hits(self.preset_id, p.dictionary_hits)
             for e in self.workbook.dictionary:
@@ -746,6 +787,7 @@ class Controller:
         self._last_shown = text
         if self.last_entry_id is not None:
             self.journal.log_copy(self.last_entry_id, text)
+            self._stats_dirty()
         if self.last_protocol is not None:
             generated = self.last_protocol.text
             diff = text_diff(generated, text) if text.strip() != generated.strip() else ''

@@ -33,6 +33,9 @@ class ShellBox:
         self._pred_taken = False             # принят (Tab/Ctrl+→) — не считать «проигнорирован»
         self._stars: set = set()             # обычные у врача пункты в списке — «★»
         self._seen: tuple[int, str] | None = None   # строка, по которой последний раз пересчитали
+        self._pred_line = 0                  # строка, для которой предсказание
+        self._ignored_at: tuple | None = None   # (строка, путь): «проигнорирован» уже записан
+        self._stats_job = None
         self._dwell_job = None
         # телеметрия текущей строки (без текста): Tab, ?, набрано символов, «не подходит» показано
         self._stat = {'tabs': 0, 'questions': 0, 'typed': 0, 'bad': False}
@@ -51,6 +54,7 @@ class ShellBox:
                         ('<Right>', lambda e: self._arrow(1, e))):
             text.bind(seq, fn, add='+')
         text.bind('<FocusOut>', lambda e: self.close(), add='+')
+        text.bind('<ButtonRelease-1>', lambda e: self.on() and self.update(), add='+')
 
     # ---------- состояние ----------
     def on(self) -> bool:
@@ -101,12 +105,16 @@ class ShellBox:
         n, line, done, typed, start = self._state()
         self._seen = (n, line)
         self.close()
+        self._schedule_stats()
         if not line.strip():
             self._predict(n)
             return
-        if self.prediction is not None and not self._pred_taken:
+        if self.prediction is not None and not self._pred_taken and n == self._pred_line \
+                and self._ignored_at != (n, self.prediction.path):
             self._track('predict', outcome='ignored', source=self.prediction.source)
+            self._ignored_at = (n, self.prediction.path)
         self.prediction = None
+        self._pred_taken = False
         if done is None or not typed.strip():
             return
         full = parse_line(self.wb, line)
@@ -148,9 +156,23 @@ class ShellBox:
         above = [p for k in range(1, n) if (p := leaf(k))]
         return below + above
 
+    def _schedule_stats(self):
+        """Длинная история досчитывается тиками в простое (окно не ждёт)."""
+        if self._stats_job is None and self.app.ctl.path_stats_pending():
+            self._stats_job = self.app.root.after(50, self._stats_tick)
+
+    def _stats_tick(self):
+        self._stats_job = None
+        if not self.on():
+            return
+        self.app.ctl.path_stats()
+        if self.app.ctl.path_stats_pending():
+            self._stats_job = self.app.root.after(50, self._stats_tick)
+
     def _predict(self, n: int):
         self._preds = predict(self.wb, self._note_paths(n), self.app.ctl.path_stats())
         self.prediction = self._preds[0] if self._preds else None
+        self._pred_line = n
         self._pred_taken = False
         if self.prediction is not None:
             path = self.prediction.path
@@ -174,11 +196,19 @@ class ShellBox:
             self._branches()
         return True
 
+    def _fresh_prediction(self, n: int, line: str) -> None:
+        """Предсказание — для этой строки (курсор могли увести стрелкой или мышью)."""
+        if not line.strip() and self._pred_line != n:
+            self._predict(n)
+
     def _ctrl_right(self, e):
         """Ctrl+→ — один следующий уровень предсказанной строки."""
-        if not self.on() or self.prediction is None or (e is not None and e.state & 0x1):
+        if not self.on() or (e is not None and e.state & 0x1):
             return None
         n, line = self._line()
+        self._fresh_prediction(n, line)
+        if self.prediction is None or self._pred_line != n:
+            return None
         path = self.prediction.path
         for k in range(len(path)):
             if line == ('' if k == 0 else self._path_text(path[:k])):
@@ -271,10 +301,17 @@ class ShellBox:
         _, _, _, typed, _ = self._state()
         tail = ' '.join(rest or [])
         self._stat['typed'] += max(0, len(typed.strip()) - len(tail))   # набрано — до разворота
+        pred = self.prediction
+        if pred is not None and not self._pred_taken and self._pred_line == n \
+                and any(path == p.path for p in self._preds):
+            self._track('predict', outcome='accepted', source=pred.source)
+            self._pred_taken = True
         self._set_line(n, self._path_text(path) + tail)
         self.close()
         self.text.focus_set()
         self.update()
+        if not tail and not is_leaf(self.wb, path) and not self.list_shown:
+            self._branches()            # группа — сразу её ветки (как Tab по предсказанию)
         return True
 
     def _finish(self) -> bool:
@@ -299,8 +336,8 @@ class ShellBox:
     def _branches(self) -> bool:
         """Список веток: набранного нет — ветки последнего уровня; есть — варианты."""
         n, line, done, typed, _ = self._state()
+        self._fresh_prediction(n, line)
         if not line.strip() and self._preds:     # пустая строка — что дальше по файлу
-            self._show_list([p.path for p in self._preds], 0)
             self._stars = {p.path for p in self._preds if p.usual}
             self._show_list([p.path for p in self._preds], 0)
             self._list_line = line
@@ -309,7 +346,7 @@ class ShellBox:
             return False
         if typed.strip():
             r = resolve(self.wb, done, typed, self.app.ctl.shell_synonyms())
-            ch = r.choices if len(r.leaves) != 1 else [r.leaves[0]]
+            ch = self._rank(r.choices) if len(r.leaves) != 1 else [r.leaves[0]]
         else:
             if done and is_leaf(self.wb, done):
                 return False
@@ -329,6 +366,7 @@ class ShellBox:
         if self.list_shown and self.selected >= 0:
             return 'break' if self._accept(self.choices[self.selected]) else None
         n, line, done, typed, _ = self._state()
+        self._fresh_prediction(n, line)
         if not line.strip() and self.prediction is not None:
             return 'break' if self._take_prediction(None) else None
         if done is None:
@@ -359,7 +397,10 @@ class ShellBox:
             return 'break'
         n, line, done, typed, _ = self._state()
         if not line.strip():
-            return None                     # пустая строка — обычный перенос
+            self.close()                    # пустая строка — обычный перенос; подсказка —
+            self.tail.place_forget()        # на новую строку, когда перенос случится
+            self.app.root.after_idle(self.update)
+            return None
         if self._finish():
             return 'break'
         if done is not None and typed.strip():
@@ -399,6 +440,10 @@ class ShellBox:
         return None
 
     def _keyrelease(self, e):
+        if self.on() and e.keysym in ('Up', 'Down') and not self.list_shown:
+            if self._line() != self._seen:   # курсор ушёл на другую строку — подсказка за ним
+                self.update()
+            return None
         if not self.on() or e.keysym in ('Up', 'Down', 'Tab', 'Return', 'KP_Enter', 'Escape',
                                          'question', 'Shift_L', 'Shift_R', 'Control_L',
                                          'Control_R', 'Left', 'Right'):
@@ -475,7 +520,7 @@ class ShellBox:
             return
         parent = tuple(codes[:k])
         kids = children_of(self.wb, parent[-1] if parent else None)
-        choices = [parent + (c.id,) for c in kids]
+        choices = self._rank([parent + (c.id,) for c in kids])
         sel = next(i for i, p in enumerate(choices) if p[-1] == codes[k])
         self._show_list(choices, sel)
         self._replace = (n, k)

@@ -165,10 +165,10 @@ class Journal:
         return out
 
     def entries_for_stats(self, preset_id: int | None, limit: int = 2000
-                          ) -> list[tuple[str, str | None]]:
-        """(запись, скопированный протокол или None) — новые первыми (набор врача, 0.5 b2)."""
-        return [(raw or '', copied) for raw, copied in self._db.execute(
-            'SELECT raw, copied_text FROM entries WHERE preset_id IS ? ORDER BY id DESC LIMIT ?',
+                          ) -> list[tuple[int, str, str | None]]:
+        """(id, запись, скопированный протокол или None) — новые первыми (набор врача, 0.5 b2)."""
+        return [(i, raw or '', copied) for i, raw, copied in self._db.execute(
+            'SELECT id, raw, copied_text FROM entries WHERE preset_id IS ? ORDER BY id DESC LIMIT ?',
             (preset_id, limit))]
 
     def raw_notes(self, preset_id: int | None, limit: int = 2000) -> list[str]:
