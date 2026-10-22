@@ -24,6 +24,7 @@ class HintBox:
         self.selected = -1            # −1 — в список не входили
         self.prefix = ''
         self.list_shown = False
+        self._forced = False            # открыто Ctrl+Space: и с 1–2 букв
         self._view = None
         self._size = None
         bg = text.cget('background')
@@ -32,8 +33,8 @@ class HintBox:
         self.frame = tk.Frame(app.root, bg='#ffffff', highlightthickness=1,
                               highlightbackground='#c9ced4')
         text.bind('<KeyRelease>', self._on_key_release, add='+')
-        for seq, fn in (('<Tab>', self._tab), ('<Down>', lambda e: self._move(1)),
-                        ('<Up>', lambda e: self._move(-1)), ('<Return>', self._enter),
+        for seq, fn in (('<Tab>', self._tab), ('<Down>', lambda e: self._move(1, e)),
+                        ('<Up>', lambda e: self._move(-1, e)), ('<Return>', self._enter),
                         ('<Escape>', self._escape), ('<Control-space>', self._manual)):
             text.bind(seq, fn)
         text.bind('<FocusOut>', lambda e: self.close(), add='+')
@@ -52,7 +53,7 @@ class HintBox:
         return bool(self.app.hints_on.get())
 
     def close(self):
-        self.items, self.selected, self.prefix = [], -1, ''
+        self.items, self.selected, self.prefix, self._forced = [], -1, '', False
         self.tail.configure(text='')
         self.tail.place_forget()
         self.frame.place_forget()
@@ -95,8 +96,8 @@ class HintBox:
             self.tail.place(x=x, y=y, bordermode='outside')
         else:
             self.tail.place_forget()
-        if len(self.items) > 1:
-            self._show_list(x, y, h)
+        if len(self.items) > 1 or not rest:     # без хвоста — список даже из одного:
+            self._show_list(x, y, h)            # Tab не меняет текст «вслепую"
         else:
             self.frame.place_forget()
             self.list_shown = False
@@ -135,36 +136,55 @@ class HintBox:
         self.list_shown = True
 
     # ---------- клавиши ----------
-    def accept(self, i: int | None = None):
+    def _prefix_here(self) -> bool:
+        """Перед курсором всё ещё то начало слова, к которому подсказка
+        (курсор могли сдвинуть, текст — отменить или вставить)."""
+        t = self.text
+        m = _WORD_END.search(t.get('insert linestart', 'insert'))
+        after = t.get('insert', 'insert +1c')
+        return bool(m) and m.group() == self.prefix and not (after and after.isalpha())
+
+    def accept(self, i: int | None = None) -> bool:
         if not self.items:
-            return
+            return False
+        if not self._prefix_here():         # подсказка устарела — ничего не трогать
+            self.close()
+            return False
         hint = self.items[max(self.selected, 0) if i is None else i]
         t = self.text
+        t.configure(autoseparators=False)   # одна отмена возвращает набранное
+        t.edit_separator()
         t.delete(f'insert -{len(self.prefix)}c', 'insert')
         t.insert('insert', hint.word)
+        t.edit_separator()
+        t.configure(autoseparators=True)
         self.close()
+        return True
 
     def _on_key_release(self, e):
-        if e.keysym in _KEEP or (e.state & 0x4):
+        if e.keysym in _KEEP or e.keysym == 'space' and e.state & 0x4:
             return
-        self.update()
+        self.update(force=self._forced and bool(e.state & 0x4) is False)
 
     def _tab(self, e):
-        if self.items:
-            self.accept()
+        if e is not None and e.state & (0x1 | 0x4):      # Shift/Ctrl+Tab — не наше
+            return None
+        if self.items and (self.list_shown or self.tail.cget('text')) and self.accept():
             return 'break'
         return None
 
-    def _move(self, step: int):
-        if not self.list_shown:
+    def _move(self, step: int, e=None):
+        if e is not None and e.state & (0x1 | 0x4):      # Shift/Ctrl+стрелки — не наше
+            return None
+        if not self.list_shown:             # только хвост: стрелка двигает курсор
+            self.close()
             return None
         self.selected = max(0, min(len(self.items) - 1, self.selected + step))
         self._show()
         return 'break'
 
     def _enter(self, e):
-        if self.items and self.selected >= 0:
-            self.accept()
+        if self.items and self.selected >= 0 and self.accept():
             return 'break'
         self.close()
         return None
@@ -176,6 +196,9 @@ class HintBox:
         return None
 
     def _manual(self, e):
+        if not self._enabled():
+            return None
+        self._forced = True
         self.update(force=True)
         return 'break'
 

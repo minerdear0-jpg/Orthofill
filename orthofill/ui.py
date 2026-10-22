@@ -255,7 +255,7 @@ class App:
         st.bind('<Configure>', lambda e: [w.configure(wraplength=max(200, e.width - 30))
                                           for w in (self.warn_lbl, self.def_lbl, self.status_lbl)])
 
-        r.bind('<Configure>', self._on_resize)
+        r.bind('<Configure>', self._on_resize, add='+')
         self._relayout('wide')
 
     def _relayout(self, mode: str):
