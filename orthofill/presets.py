@@ -69,20 +69,29 @@ class PresetStore:
         db = self._db
         if not keep_dictionary:
             db.execute('DELETE FROM dictionary WHERE preset_id=?', (pid,))
-        self._write_items(pid, wb.items)
+        self._write_items(pid, wb.items, wb.not_together)
         self._write_references(pid, wb.references)
         self._write_dictionary(pid, wb.dictionary)
         db.execute('INSERT INTO imports (preset_id, at, file_name, sha256, items, references_)'
                    ' VALUES (?,?,?,?,?,?)',
                    (pid, _now(), wb.source, wb.sha256, len(wb.items), len(wb.references)))
 
-    def _write_items(self, pid: int, items) -> None:
+    def _write_items(self, pid: int, items, pairs=()) -> None:
+        """Пункты пресета и пары «не вместе» (они живут вместе с пунктами)."""
         self._db.execute('DELETE FROM preset_items WHERE preset_id=?', (pid,))
         for pos, it in enumerate(items):
-            self._db.execute('INSERT INTO preset_items VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                             (pid, pos, it.id, it.text, it.level, it.parent, int(it.orphan),
-                              it.method, it.when, it.default,
-                              json.dumps(it.words, ensure_ascii=False) if it.words else None))
+            self._db.execute(
+                'INSERT INTO preset_items (preset_id, pos, code, text, level, parent, orphan,'
+                ' method, when_, default_code, words_json, combine, condition_json)'
+                ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                (pid, pos, it.id, it.text, it.level, it.parent, int(it.orphan),
+                 it.method, it.when, it.default,
+                 json.dumps(it.words, ensure_ascii=False) if it.words else None,
+                 it.combine,
+                 json.dumps(it.condition, ensure_ascii=False) if it.condition else None))
+        self._db.execute('DELETE FROM not_together WHERE preset_id=?', (pid,))
+        self._db.executemany('INSERT OR IGNORE INTO not_together VALUES (?,?,?)',
+                             [(pid, *sorted(p)) for p in pairs])
 
     def _write_references(self, pid: int, references) -> None:
         for table in ('reference_cases', 'reference_lines'):
@@ -103,7 +112,7 @@ class PresetStore:
         refs, words = draft.replay(self._load_references(preset_id),
                                    self._load_dictionary(preset_id))
         with self._db:
-            self._write_items(preset_id, draft.wb.items)
+            self._write_items(preset_id, draft.wb.items, draft.wb.not_together)
             self._write_references(preset_id, refs)
             self._db.execute('DELETE FROM dictionary WHERE preset_id=?', (preset_id,))
             self._write_dictionary(preset_id, words)
@@ -122,11 +131,14 @@ class PresetStore:
         name, source = db.execute('SELECT name, source FROM presets WHERE id=?',
                                   (preset_id,)).fetchone()
         items, by_id = [], {}
-        for code, text, level, parent, orphan, method, when, default, words in db.execute(
-                'SELECT code, text, level, parent, orphan, method, when_, default_code, words_json'
-                ' FROM preset_items WHERE preset_id=? ORDER BY pos', (preset_id,)):
+        for (code, text, level, parent, orphan, method, when, default, words, combine,
+             cond) in db.execute(
+                'SELECT code, text, level, parent, orphan, method, when_, default_code, words_json,'
+                ' combine, condition_json FROM preset_items WHERE preset_id=? ORDER BY pos',
+                (preset_id,)):
             it = Item(code, text, level, parent, bool(orphan), method=method, when=when,
-                      default=default, words=json.loads(words) if words else [])
+                      default=default, words=json.loads(words) if words else [],
+                      combine=combine, condition=json.loads(cond) if cond else None)
             items.append(it)
             by_id[code] = it
         for it in items:
@@ -134,14 +146,19 @@ class PresetStore:
                 by_id[it.parent].children.append(it)
         refs = self._load_references(preset_id)
         dictionary = self._load_dictionary(preset_id)
+        pairs = [tuple(p) for p in db.execute(
+            'SELECT a, b FROM not_together WHERE preset_id=? ORDER BY a, b', (preset_id,))]
         content = json.dumps(
-            {'items': [[i.id, i.text, i.method, i.when, i.default, i.words] for i in items],
-             'references': [[r.case_id, r.raw, r.lines] for r in refs]}, ensure_ascii=False)
+            {'items': [[i.id, i.text, i.method, i.when, i.default, i.words, i.combine,
+                        i.condition] for i in items],
+             'references': [[r.case_id, r.raw, r.lines] for r in refs],
+             'not_together': pairs}, ensure_ascii=False)
         wb = Workbook(path=None, sha256=hashlib.sha256(content.encode()).hexdigest(),
                       items=items, by_id=by_id,
                       sections=[it for it in items if it.level == 1],
                       references=refs, problems=[], warnings=[],
-                      name=name, source=source or '', dictionary=dictionary)
+                      name=name, source=source or '', dictionary=dictionary,
+                      not_together=pairs)
         normalize_references(wb)          # эталоны, сохранённые в 0.2 beta 1
         return wb
 

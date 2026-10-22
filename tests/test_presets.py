@@ -103,7 +103,7 @@ def test_migrates_v1_db(tmp_path):
     con.commit()
     con.close()
     j = Journal(db)
-    assert j._db.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert j._db.execute("PRAGMA user_version").fetchone()[0] == 3
     assert j._db.execute("SELECT raw FROM entries").fetchone()[0] == "лигатурная"
     assert j.get_setting("last_file") == "C:/a.xlsx"
     j._db.execute("SELECT preset_id FROM entries")      # столбец появился
@@ -130,3 +130,40 @@ def test_learn_same_word_replaces(store, order_xlsx):
     store.learn(pid, "торк", "Изгиб второго порядка", "4g2")
     store.learn(pid, "ТОРК", "Изгиб третьего порядка", "4g3")
     assert [(e.word, e.code) for e in store.load(pid).dictionary] == [("торк", "4g3")]
+
+
+# ---------- 0.2 beta 5: логика ----------
+def test_logic_roundtrip_in_store(store, order_xlsx):
+    wb = load_workbook_file(order_xlsx)
+    wb.by_id['4f'].combine = 'and'
+    wb.by_id['4h1'].when = 'condition'
+    wb.by_id['4h1'].condition = {'all': [{'field': '2b', 'is': '2b2'}]}
+    wb.not_together = [('4h1', '4h2')]
+    pid = store.create(wb)
+    back = store.load(pid)
+    assert back.by_id['4f'].combine == 'and'
+    assert back.by_id['4h1'].condition == {'all': [{'field': '2b', 'is': '2b2'}]}
+    assert back.by_id['4h1'].when == 'condition' and back.not_together == [('4h1', '4h2')]
+    sha = back.sha256
+    back.not_together = []
+    store.update(pid, back)
+    assert store.load(pid).not_together == [] and store.load(pid).sha256 != sha
+
+
+def test_migrates_v2_db(tmp_path):
+    from orthofill.journal import _SCHEMA, _SCHEMA_V2
+    db = tmp_path / "v2.db"
+    con = sqlite3.connect(db)
+    con.executescript(_SCHEMA + _SCHEMA_V2.replace(
+        "method TEXT, when_ TEXT, default_code TEXT, words_json TEXT,",
+        "method TEXT, when_ TEXT, default_code TEXT, words_json TEXT,"))
+    con.execute("ALTER TABLE entries ADD COLUMN preset_id INTEGER")
+    con.execute("PRAGMA user_version = 2")
+    con.commit()
+    con.close()
+    j = Journal(db)
+    cols = {r[1] for r in j._db.execute("PRAGMA table_info(preset_items)")}
+    assert j._db.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert {"combine", "condition_json"} <= cols
+    j._db.execute("SELECT a, b FROM not_together")
+    Journal(db)

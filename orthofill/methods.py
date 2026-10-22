@@ -21,4 +21,5 @@ METHOD_LABELS = {
 WHEN_LABELS = {
     'always':    'всегда',
     'mentioned': 'если упомянут',
+    'condition': 'по условию',
 }

@@ -50,7 +50,13 @@ CREATE TABLE IF NOT EXISTS imports (
 CREATE TABLE IF NOT EXISTS exports (
     id INTEGER PRIMARY KEY AUTOINCREMENT, preset_id INTEGER, at TEXT, file_name TEXT);
 """
-SCHEMA_VERSION = 2
+# Версия 3 (0.2 beta 5): логика пунктов — сочетание, условие, пары «не вместе»
+_SCHEMA_V3 = """
+CREATE TABLE IF NOT EXISTS not_together (
+    preset_id INTEGER NOT NULL, a TEXT NOT NULL, b TEXT NOT NULL,
+    PRIMARY KEY (preset_id, a, b));
+"""
+SCHEMA_VERSION = 3
 
 
 def _now() -> str:
@@ -90,7 +96,8 @@ class Journal:
         self._migrate()
 
     def _migrate(self) -> None:
-        """База 0.1 (версия 1) → 2: пресеты; журнал и настройки не трогаются."""
+        """База 0.1 (версия 1) → 2: пресеты; 2 → 3: логика пунктов. Журнал и
+        настройки не трогаются."""
         if self._db.execute('PRAGMA user_version').fetchone()[0] >= SCHEMA_VERSION:
             return
         with self._db:
@@ -98,6 +105,11 @@ class Journal:
             if 'preset_id' not in cols:
                 self._db.execute('ALTER TABLE entries ADD COLUMN preset_id INTEGER')
             self._db.executescript(_SCHEMA_V2)
+            cols = {r[1] for r in self._db.execute('PRAGMA table_info(preset_items)')}
+            for col in ('combine', 'condition_json'):
+                if col not in cols:
+                    self._db.execute(f'ALTER TABLE preset_items ADD COLUMN {col} TEXT')
+            self._db.executescript(_SCHEMA_V3)
             self._db.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
 
     def _exec(self, sql: str, args=()) -> sqlite3.Cursor:

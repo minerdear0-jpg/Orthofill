@@ -35,6 +35,8 @@ class Item:
     when: str | None = None         # отдельный пункт: 'always' | 'mentioned'
     default: str | None = None      # группа: код варианта, если врач не написал
     words: list[str] = field(default_factory=list)   # доп. слова упоминания
+    combine: str | None = None      # группа: 'and' — все упомянутые варианты; None — один (ИЛИ)
+    condition: dict | None = None   # пункт: условие (orthofill/logic.py), None — нет
 
 
 @dataclass
@@ -67,6 +69,7 @@ class Workbook:
     name: str = ''                  # имя пресета
     source: str = ''                # файл, из которого пресет импортирован
     dictionary: list[DictEntry] = field(default_factory=list)
+    not_together: list[tuple[str, str]] = field(default_factory=list)   # пары (a, b), a < b
 
 
 def clean_code(value) -> str:
