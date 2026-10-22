@@ -165,3 +165,70 @@ def test_layout_events(sh, monkeypatch):
     sh.generate('ctrl_enter')
     names = [d.get('name') for e, d in seen if e == 'ui']
     assert names[:2] == ['drawer_open', 'drawer_close'] and 'review_open' in names
+
+
+# ---------- итоговая проверка 0.5b5: одно окно, несколько переходов ----------
+def test_full_width_after_review_and_escape(sh):
+    _note(sh, ('4', '4f', '4f1'))
+    sh.generate('ctrl_enter')
+    _key(sh, 'Escape')
+    assert sh.shell_view == 'input' and _w(sh.in_panel) > 0.9 * _w(sh.body)
+    _key(sh, 'F2')
+    assert _w(sh.in_panel) > 0.9 * _w(sh.body)
+
+
+def test_comma_after_review_like_fresh(sh, app):
+    _note(sh, ('4', '4f', '4f1'))
+    sh.generate('ctrl_enter')
+    sh.ctl.set_shell_mode(False)
+    sh.shell_var.set(False)
+    sh._apply_shell_mode()
+    sh.root.update()
+    body = _w(sh.body)
+    assert 0.42 < _w(sh.in_panel) / body < 0.52          # как в новом окне (568/1200), не 2:3 строго
+    assert str(sh.out_panel.cget('relief')) in ('flat', '') and str(sh.out_panel.cget('borderwidth')) in ('0', '')
+
+
+def test_drawer_border_cleared_in_comma(sh):
+    _key(sh, 'F2')
+    sh.ctl.set_shell_mode(False)
+    sh.shell_var.set(False)
+    sh._apply_shell_mode()
+    sh.root.update()
+    assert str(sh.out_panel.cget('relief')) == 'flat' and str(sh.out_panel.cget('padding')) in ('0', '', '0 0 0 0', '(0,)')
+
+
+def test_narrow_review_after_wide(sh):
+    _note(sh, ('4', '4f', '4f1'))
+    sh.generate('ctrl_enter')
+    _key(sh, 'Escape')
+    sh.root.geometry('760x700')
+    sh.root.update()
+    sh._on_resize(type('E', (), {'widget': sh.root, 'width': 760, 'height': 700})())
+    sh.generate('ctrl_enter')
+    sh.root.update()
+    assert _w(sh.in_panel) > 0.9 * _w(sh.body) and _w(sh.out_panel) > 0.9 * _w(sh.body)
+
+
+def test_f2_ignored_in_other_windows(sh):
+    import tkinter as tk
+    top = tk.Toplevel(sh.root)
+    t = tk.Text(top)
+    t.pack()
+    sh.root.update()
+    t.focus_force()
+    sh.root.update()
+    t.event_generate('<F2>', when='now')
+    sh.root.update()
+    assert sh.shell_view == 'input'
+    top.destroy()
+
+
+def test_close_event_when_shell_off(sh, monkeypatch):
+    seen = []
+    _key(sh, 'F2')
+    monkeypatch.setattr(sh.ctl, 'track', lambda e, **d: seen.append((e, d)))
+    sh.ctl.set_shell_mode(False)
+    sh.shell_var.set(False)
+    sh._apply_shell_mode()
+    assert ('ui', {'name': 'drawer_close'}) in seen
