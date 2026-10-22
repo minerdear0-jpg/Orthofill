@@ -13,6 +13,10 @@ MARK = '‹ФИО›'
 _SURN = r'[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?'
 _INIT = r'[А-ЯЁ]\.(?:\s?[А-ЯЁ]\.)?'
 _INITIALS = re.compile(rf'(?<![\w.]){_SURN}\s+{_INIT}(?!\w)|(?<![\w.]){_INIT}\s?{_SURN}(?!\w)')
+# то же в нижнем регистре (нормализованная копия записи): «петров и.и.»
+_SURN_LOW = r'[а-яё]{2,}(?:ов|ев|ёв|ин|ын|ова|ева|ёва|ина|ына|ский|ская|цкий|цкая|ко|ук|юк|енко)'
+_INITIALS_LOW = re.compile(
+    rf'(?<![\w.]){_SURN_LOW}\s+(?!(?:т\.\s?[кедп]\.|и\.\s?т\.))[а-яё]\.\s?[а-яё]\.(?!\w)')
 _WORD = re.compile(r'[А-Яа-яЁё]+(?:-[А-Яа-яЁё]+)?')
 # отчество во всех падежах: Иванович(а/у/ем/е), Ивановна (ы/е/у/ой), Ильич, Ильинична
 _PATRONYMIC = re.compile(
@@ -70,12 +74,13 @@ def scrub_text(text: str, keep: frozenset[str] = frozenset()) -> tuple[str, int]
 
     def _init_sub(m: re.Match) -> str:
         nonlocal count
-        if any(_key(w) in keep for w in _WORD.findall(m.group(0))):
+        if any(_key(w) in keep for w in _WORD.findall(m.group(0)) if len(w) >= 3):
             return m.group(0)
         count += 1
         return MARK
 
     text = _INITIALS.sub(_init_sub, text)
+    text = _INITIALS_LOW.sub(_init_sub, text)
 
     words = list(_WORD.finditer(text))
     kinds = []

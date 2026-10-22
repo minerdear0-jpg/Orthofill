@@ -11,6 +11,7 @@ import time
 import traceback
 
 from .diag import DiagLog, text_diff
+from .telemetry import Telemetry, TelemetryConfig, load_config
 from .engine import Protocol, build_protocol, check_references, rule_warnings
 from .parse import extract_facts
 from .vocab import signature, unknown_words
@@ -37,6 +38,21 @@ CASE_KINDS = {
 # а не перешёл к следующему пациенту
 NOTE_FIX_SECONDS = 120
 NOTE_FIX_SIMILARITY = 0.6
+
+
+def find_telemetry_config() -> TelemetryConfig | None:
+    """telemetry.json: рядом с exe → папка данных → встроенный в сборку."""
+    import sys
+    from .journal import _app_dir, data_dir
+    bundle = getattr(sys, '_MEIPASS', None)
+    try:
+        data = data_dir()
+    except OSError:
+        data = None
+    return load_config(_app_dir(), data, Path(bundle) if bundle else None)
+
+
+PERF_WINDOW = 10.0       # с — замеры скорости сводятся в одно событие perf
 
 
 def layout_mode(width: int) -> str:
@@ -94,20 +110,129 @@ class Controller:
         self.last_copy_edited = False
         self._last_generate_at = 0.0
         self.last_learn_broke: list[str] = []
+        self.telemetry: Telemetry | None = None
+        self._telemetry_cfg: TelemetryConfig | None = None
+        self._telemetry_error = ''
+        self.perf_window = PERF_WINDOW
+        self._perf: dict[str, list[float]] = {}
+        self._perf_since = time.monotonic()
+        self._keep_cache: tuple[int, frozenset[str]] | None = None
 
     # ---------- диагностика ----------
     def set_diagnostics(self, enabled: bool) -> None:
         if enabled:
             self.diagnostics = True
+            self._telemetry_start()
             self._log('diagnostics_on')
         else:
             self._log('diagnostics_off')
+            self._perf_flush()
             self.diagnostics = False
+            self._telemetry_stop()
         self.journal.set_setting('diagnostics', '1' if enabled else '0')
 
     def _log(self, event: str, **data) -> None:
         if self.diagnostics:
             self._diag.write(event, **data)
+
+    def track(self, event: str, **data) -> None:
+        """Событие поведения: в диагностику и телеметрию (только при включённой
+        «Диагностике»)."""
+        self._log(event, **data)
+
+    # ---------- телеметрия ----------
+    def install_id(self) -> str:
+        """Случайный идентификатор установки (без ПД), один на базу."""
+        v = self.journal.get_setting('install_id')
+        if not v:
+            import uuid
+            v = uuid.uuid4().hex
+            self.journal.set_setting('install_id', v)
+        return v
+
+    def _keep_words(self) -> frozenset[str]:
+        """Слова словаря и пунктов пресета — их вырезание ФИО не трогает."""
+        wb = self.workbook
+        if wb is None:
+            return frozenset()
+        if self._keep_cache and self._keep_cache[0] == id(wb):
+            return self._keep_cache[1]
+        words: set[str] = set()
+        for e in wb.dictionary:
+            words |= set(re.findall(r'[а-яё]+', e.word.lower().replace('ё', 'е')))
+        for it in wb.items:
+            words |= set(re.findall(r'[а-яё]+', it.text.lower().replace('ё', 'е')))
+            for w in it.words:
+                words |= set(re.findall(r'[а-яё]+', w.lower().replace('ё', 'е')))
+        keep = frozenset(words)
+        self._keep_cache = (id(wb), keep)
+        return keep
+
+    def _telemetry_start(self) -> None:
+        if self.telemetry is not None:
+            return
+        from . import telemetry as tm
+        tm.load_config.error = ''              # ошибка прошлого поиска — не наша
+        self._telemetry_cfg = cfg = find_telemetry_config()
+        self._telemetry_error = tm.load_config.error
+        if cfg is None:
+            return
+        try:
+            t = Telemetry(cfg, self.journal.db_path.parent / 'telemetry', keep=self._keep_words)
+        except Exception as e:                  # битый сертификат и т. п.
+            self._telemetry_error = f'{type(e).__name__}: {e}'
+            return
+        install, doctor = self.install_id(), cfg.doctor
+
+        def sink(rec: dict) -> None:
+            t.put({**rec, 'install': install, 'doctor': doctor,
+                   'preset_name': self.workbook.name if self.workbook else None})
+        self._diag.sink = sink
+        self.telemetry = t
+        t.start()
+
+    def _telemetry_stop(self) -> None:
+        self._diag.sink = None
+        if self.telemetry is not None:
+            self.telemetry.close()
+            self.telemetry = None
+
+    def shutdown(self) -> None:
+        """Закрытие программы: сводка скорости и очередь — на диск, без ожидания сети."""
+        self._perf_flush()
+        self._telemetry_stop()
+
+    def telemetry_line(self) -> str:
+        if not self.diagnostics:
+            return 'Телеметрия: выключена (нужна «Диагностика»)'
+        if self.telemetry is None:
+            if self._telemetry_error:
+                return f'Телеметрия: ошибка настройки — {self._telemetry_error}'
+            return 'Телеметрия: не настроена (нет telemetry.json)'
+        s = self.telemetry.status()
+        state = s.error or ('сервер доступен' if s.last_ok else 'ещё не отправляла')
+        over = f', в запасе {s.overflowed}' if s.overflowed else ''
+        return f'Телеметрия: отправлено {s.sent}, в очереди {s.queued}{over} — {state}'
+
+    def perf(self, name: str, ms: float) -> None:
+        """Замер скорости; сводится в одно событие perf за окно perf_window."""
+        if not self.diagnostics:
+            return
+        self._perf.setdefault(name, []).append(ms)
+        if time.monotonic() - self._perf_since >= self.perf_window:
+            self._perf_flush()
+
+    def _perf_flush(self) -> None:
+        if self._perf and self.diagnostics:
+            data = {}
+            for name, xs in self._perf.items():
+                xs = sorted(xs)
+                data[f'{name}_n'] = len(xs)
+                data[f'{name}_ms_med'] = round(xs[len(xs) // 2], 1)
+                data[f'{name}_ms_max'] = round(xs[-1], 1)
+            self._log('perf', **data)
+        self._perf = {}
+        self._perf_since = time.monotonic()
 
     def _log_error(self, where: str, e: Exception) -> None:
         self._log('error', where=where, error=f'{type(e).__name__}: {e}',
@@ -128,6 +253,8 @@ class Controller:
 
     def startup(self) -> None:
         self.diagnostics = self.journal.get_setting('diagnostics') == '1'
+        if self.diagnostics:
+            self._telemetry_start()
         saved = self.journal.get_setting('preset_id')
         if saved and saved.isdigit() and self.presets.exists(int(saved)):
             self._activate(int(saved))
@@ -252,18 +379,21 @@ class Controller:
         """Черновик протокола при наборе: без журнала, буфера и диагностики."""
         if self.workbook is None or not raw.strip():
             return GenerateResult('', '', [], '', False)
+        t0 = time.perf_counter()
         try:
             p = build_protocol(self.workbook, raw, list(tokens))
         except Exception as e:
             self._log_error('preview', e)
             return GenerateResult('', f'✗ Ошибка: {e}', [], '', False)
+        self.perf('preview', (time.perf_counter() - t0) * 1000)
         self._preview = (raw, list(tokens), p)
         self._last_shown = p.text           # по нему окно узнаёт ручную правку протокола
         defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
         return GenerateResult(p.text, 'черновик — Ctrl+Enter подтвердить', p.warnings, defaults,
                               False, p.rows)
 
-    def generate(self, raw: str, copy: bool = True, tokens=(), text: str | None = None) -> GenerateResult:
+    def generate(self, raw: str, copy: bool = True, tokens=(), text: str | None = None,
+                 via: str | None = None, stats: dict | None = None) -> GenerateResult:
         """Подтверждение протокола (Ctrl+Enter): в журнал и, если copy, в буфер.
         text — протокол, поправленный руками: в буфер уходит он.
         copy=False — пересобрать без копирования (смена пресета)."""
@@ -309,6 +439,11 @@ class Controller:
                       lines=p.lines, warnings=p.warnings, defaults=p.defaults,
                       preset=self._preset_ref(), sha256=self.workbook.sha256,
                       dictionary_hits=p.dictionary_hits, tokens=[list(t) for t in tokens])
+        if via:
+            changed = (sum(1 for line in difflib.ndiff(p.text.splitlines(), text.splitlines())
+                           if line[:1] in '+-') if edited else 0)
+            self.track('note_confirm', via=via, edited_lines=changed, length=len(raw),
+                       **(stats or {}))
         defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
         status = 'Скопировано в буфер' if copy else 'Протокол пересобран (в буфер не копировался)'
         return GenerateResult(p.text, status, p.warnings, defaults, copy, p.rows)
@@ -474,6 +609,7 @@ class Controller:
         for name, template, n in propose(self.journal.raw_notes(self.preset_id), wb.phrases):
             shape = shape_of(template)
             if shape in here and shape not in declined:
+                self.track('proposal', action='shown', name=name)
                 return name, template, n
         return None
 
@@ -482,6 +618,7 @@ class Controller:
         name, template, _ = prop
         self.presets.add_phrase(self.preset_id, Phrase(name, template))
         self._log('phrase_add', name=name, template=template, preset=self._preset_ref())
+        self.track('proposal', action='yes', name=name)
         self._reload()
         return f'Фраза «.{name}» добавлена: наберите .{name} и Tab'
 
@@ -491,6 +628,7 @@ class Controller:
         key = f'phrase_declined:{self.preset_id}'        # «Нет» — для этого пресета
         declined = json.loads(self.journal.get_setting(key, '[]'))
         declined.append(shape_of(prop[1]))
+        self.track('proposal', action='no', name=prop[0])
         self.journal.set_setting(key, json.dumps(declined, ensure_ascii=False))
 
     # ---------- редактор пресета ----------

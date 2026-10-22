@@ -114,3 +114,11 @@ def app_with_p(tmp_path, order_xlsx_with):
     a = _make_app(tmp_path, wb.path)
     yield a
     a.root.destroy()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_telemetry(monkeypatch):
+    """Тесты никогда не ищут настоящий telemetry.json (он может лежать в папке
+    проекта для сборки) — свой конфиг задают только тесты телеметрии."""
+    import orthofill.controller as c
+    monkeypatch.setattr(c, 'find_telemetry_config', lambda: None)

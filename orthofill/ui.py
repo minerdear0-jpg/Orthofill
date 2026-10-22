@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, ttk
@@ -346,7 +347,7 @@ class App:
     def _bind_keys(self):
         for w in (self.raw_txt, self.out_txt, self.add_entry):
             for seq in ('<Control-Return>', '<Control-KP_Enter>'):
-                w.bind(seq, lambda e: (self.generate(), 'break')[1])
+                w.bind(seq, lambda e: (self.generate('ctrl_enter'), 'break')[1])
         self.root.bind_all('<Control-KeyPress>', self._on_ctrl_key, add='+')
         # меню правой кнопки во всех полях ввода (и в диалогах, и в редакторе)
         for cls in ('Text', 'Entry', 'TEntry'):
@@ -757,9 +758,9 @@ class App:
         self.live_label.configure(text=_LIVE_KEPT)
         self.live_keep_btn.pack_forget()
 
-    def generate(self):
+    def generate(self, via: str = 'button'):
         """Ctrl+Enter — подтвердить протокол: в буфер — то, что видно справа (с
-        правками врача), запись — в журнал."""
+        правками врача), запись — в журнал. via — чем подтвердил (телеметрия)."""
         self.hint_box.close()
         pending = self._live_job is not None
         self._cancel_live()
@@ -767,7 +768,8 @@ class App:
         edited = self.ctl.needs_confirm_regenerate(current)
         stale = edited and (pending or self.live_frozen)   # дописано после правки протокола
         r = self.ctl.generate(self.raw_txt.get('1.0', 'end-1c'), tokens=self.tokens(),
-                              text=current if edited else None)
+                              text=current if edited else None, via=via,
+                              stats=self._note_stats())
         self._unfreeze()
         if r.copied and edited:
             self.ctl.confirm_shown(current)         # правка подтверждена — это и есть протокол
@@ -1099,7 +1101,7 @@ class App:
 
     def copy(self):
         if self._draft_unconfirmed():       # «Копировать» черновика = подтвердить
-            self.generate()
+            self.generate('copy')
             return
         text = self.out_txt.get('1.0', 'end-1c').strip()
         if text:
@@ -1326,7 +1328,22 @@ class App:
         j = self.ctl.journal
         j.set_setting('geometry', self.root.geometry())
         j.set_setting('topmost', '1' if self.topmost.get() else '0')
+        self.ctl.shutdown()               # очередь телеметрии — на диск, сеть не ждём
         self.root.destroy()
+
+    def _note_stats(self) -> dict:
+        """Счётчики набора записи (Task 4 — NoteStats)."""
+        return {}
+
+    def _session_start(self):
+        import platform
+        from . import STARTED
+        self.root.update_idletasks()
+        self.ctl.track('session_start', os=platform.platform(),
+                       scale=round(float(self.root.tk.call('tk', 'scaling')), 2),
+                       window=self.root.geometry(),
+                       screen=f'{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()}',
+                       startup_ms=round((time.perf_counter() - STARTED) * 1000))
 
 
 def _preset_about(ctl: Controller) -> str:
@@ -1355,6 +1372,7 @@ def run() -> None:
     app = App(root, Controller(journal, clipboard=lambda t: None))
     app.ctl.clipboard = app._clipboard
     root.protocol('WM_DELETE_WINDOW', app.close)
+    root.after_idle(app._session_start)
 
     def on_error(exc, val, tb):   # в exe без консоли иначе ошибку никто не увидит
         import traceback
@@ -1430,7 +1448,9 @@ class AboutDialog:
         diag = 'включена' if ctl.diagnostics else 'выключена'
         info = (f'Пресет: {_preset_about(ctl)}\n'
                 f'Журнал: {ctl.journal.db_path}\n'
-                f'Диагностика ({diag}): {ctl.diag_dir}')
+                f'Диагностика ({diag}): {ctl.diag_dir}\n'
+                f'{ctl.telemetry_line()}')
+        self.info_text = info
         foot = ttk.Frame(win, padding=(14, 8, 14, 12))
         foot.pack(fill='x')
         ttk.Label(foot, text=info, foreground=MUTED, font=app.f_small,

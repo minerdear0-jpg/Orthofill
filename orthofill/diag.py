@@ -17,6 +17,7 @@ from .buildinfo import build_id
 class DiagLog:
     def __init__(self, folder: Path):
         self.folder = Path(folder)
+        self.sink = None        # телеметрия: получает каждую запись (без ожидания)
 
     def write(self, event: str, **data) -> None:
         now = datetime.now()
@@ -30,6 +31,11 @@ class DiagLog:
                 f.write(json.dumps(record, ensure_ascii=False, default=str) + '\n')
         except OSError:
             pass   # диагностика не должна мешать работе врача
+        if self.sink is not None:
+            try:
+                self.sink(record)
+            except Exception:
+                pass
 
 
 def text_diff(generated: str, final: str) -> str:
