@@ -142,3 +142,77 @@ def test_typing_line_not_underlined(sh):
     sh.raw_txt.mark_set('insert', '1.0')
     sh._show_unknown(sh.ctl.find_unknown(_raw(sh)))
     assert sh.raw_txt.tag_ranges('unknown')          # курсор ушёл — строка 2 непонята
+
+
+# ---------- Task 5: стрелки по уровням ----------
+def _line_at(sh, path):
+    _type(sh, format_path(_wb(sh), path))
+    sh.raw_txt.mark_set('insert', '1.end')
+
+
+def _col(sh):
+    return int(sh.raw_txt.index('insert').split('.')[1])
+
+
+def _dwell(sh):
+    sh.root.after(sh.shell_box.dwell_ms + 80)
+    sh.root.update()
+
+
+def test_arrows_move_by_level(sh):
+    _line_at(sh, ('4', '4b', '4b5'))
+    line = _raw(sh)
+    starts = [0, line.index(' › Смена') + 3, line.rindex(' › ') + 3]
+    _key(sh, 'Left')
+    assert _col(sh) == starts[2]
+    _key(sh, 'Left')
+    assert _col(sh) == starts[1]
+    _key(sh, 'Left')
+    assert _col(sh) == starts[0]
+    _key(sh, 'Right')
+    assert _col(sh) == starts[1]
+
+
+def test_dwell_opens_siblings(sh):
+    _line_at(sh, ('4', '4b', '4b5'))
+    _key(sh, 'Left')
+    _dwell(sh)
+    sb = sh.shell_box
+    assert sb.list_shown and len(sb.choices) == 21 and sb.choices[sb.selected][-1] == '4b5'
+
+
+def test_typing_does_not_open_siblings(sh):
+    _line_at(sh, ('4', '4b', '4b5'))
+    _key(sh, 'Left')
+    _key(sh, 'KeyPress', keysym='a')         # набор отменяет «намеренную остановку»
+    _dwell(sh)
+    assert not sh.shell_box.list_shown
+
+
+def test_replace_level_keeps_tail(sh):
+    _line_at(sh, ('4', '4b', '4b5'))
+    _key(sh, 'Left')
+    _key(sh, 'Left')                          # на «Смена дуги на верхней челюсти»
+    _dwell(sh)
+    sb = sh.shell_box
+    sb.selected = [c[-1] for c in sb.choices].index('4c')
+    _key(sh, 'Return')
+    assert _raw(sh) == format_path(_wb(sh), ('4', '4c')) + ' › '
+
+
+def test_replace_leaf(sh):
+    _line_at(sh, ('4', '4b', '4b5'))
+    _key(sh, 'Left')
+    _dwell(sh)
+    sb = sh.shell_box
+    sb.selected = [c[-1] for c in sb.choices].index('4b18')
+    _key(sh, 'Return')
+    from orthofill.shell import parse_line
+    assert parse_line(_wb(sh), _raw(sh).split('\n')[0]) == ('4', '4b', '4b18')
+    assert '4b18' in [c for r in sh.ctl.preview(_raw(sh)).rows for c in r.codes]
+
+
+def test_complete_line_no_ghost(sh):
+    _line_at(sh, ('4', '4b', '4b5'))
+    sh.shell_box.update()
+    assert not sh.shell_box.ghost and not sh.shell_box.list_shown

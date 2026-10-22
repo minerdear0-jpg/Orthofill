@@ -16,6 +16,8 @@ _SEL_BG, _BORDER = '#e3eef7', '#1f5f8b'
 
 
 class ShellBox:
+    dwell_ms = 400          # мс: курсор, пришедший стрелкой, «намеренно» стоит на уровне
+
     def __init__(self, app, text: tk.Text):
         self.app, self.text = app, text
         self.choices: list[Path] = []
@@ -23,6 +25,8 @@ class ShellBox:
         self.ghost = ''
         self.list_shown = False
         self._expanded: tuple[str, str] | None = None     # (строка до, строка после) последнего разворота
+        self._replace: tuple[int, int] | None = None       # (строка, уровень): список — соседи уровня
+        self._dwell_job = None
         text.tag_configure('shell_bad', foreground='#b42318', underline=True)
         text.tag_configure('shell_ok', foreground='#1b1b1a')
         bg = text.cget('background')
@@ -32,7 +36,9 @@ class ShellBox:
         for seq, fn in (('<Tab>', self._tab), ('<Return>', self._enter), ('<KP_Enter>', self._enter),
                         ('<Escape>', self._escape), ('<Up>', lambda e: self._move(-1)),
                         ('<Down>', lambda e: self._move(1)), ('<KeyPress>', self._keypress),
-                        ('<KeyRelease>', self._keyrelease)):
+                        ('<KeyRelease>', self._keyrelease),
+                        ('<Left>', lambda e: self._arrow(-1, e)),
+                        ('<Right>', lambda e: self._arrow(1, e))):
             text.bind(seq, fn, add='+')
         text.bind('<FocusOut>', lambda e: self.close(), add='+')
 
@@ -59,6 +65,8 @@ class ShellBox:
         return n, line, done, typed, start
 
     def close(self):
+        self._cancel_dwell()
+        self._replace = None
         self.choices, self.selected, self.list_shown = [], -1, False
         self.ghost = ''
         self.tail.place_forget()
@@ -75,6 +83,9 @@ class ShellBox:
         n, line, done, typed, start = self._state()
         self.close()
         if done is None or not typed.strip():
+            return
+        full = parse_line(self.wb, line)
+        if full and is_leaf(self.wb, full):     # строка уже готова — подсказывать нечего
             return
         r = resolve(self.wb, done, typed, self.app.ctl.shell_synonyms())
         if not r.leaves:
@@ -204,6 +215,8 @@ class ShellBox:
     def _tab(self, e):
         if not self.on() or (e is not None and e.state & (0x1 | 0x4)):
             return None
+        if self._replace and self.list_shown and self.selected >= 0:
+            return 'break' if self._replace_level(self.choices[self.selected]) else None
         if self.list_shown and self.selected >= 0:
             return 'break' if self._accept(self.choices[self.selected]) else None
         n, line, done, typed, _ = self._state()
@@ -224,6 +237,9 @@ class ShellBox:
     def _enter(self, e):
         if not self.on():
             return None
+        if self._replace and self.list_shown and self.selected >= 0:
+            self._replace_level(self.choices[self.selected])
+            return 'break'
         if self.list_shown and self.selected >= 0:
             self._accept(self.choices[self.selected])
             self._finish()
@@ -258,6 +274,8 @@ class ShellBox:
     def _keypress(self, e):
         if not self.on():
             return None
+        if e.keysym not in ('Left', 'Right', 'Up', 'Down', 'Return', 'KP_Enter', 'Tab', 'Escape'):
+            self._cancel_dwell()            # набор — не «намеренная остановка»
         if e.char == '?':                   # ветки уровня; в текст не вставляется
             self._branches()
             return 'break'
@@ -274,6 +292,92 @@ class ShellBox:
             self._expanded = None
         self.update()
         return None
+
+    # ---------- стрелки по уровням (как в fish) ----------
+    def _segments(self, line: str) -> list[tuple[int, int]]:
+        """(начало, конец) каждого уровня строки."""
+        out, pos = [], 0
+        for part in line.split(SEP):
+            out.append((pos, pos + len(part)))
+            pos += len(part) + len(SEP)
+        return out
+
+    def _arrow(self, step: int, e):
+        if not self.on() or (e is not None and e.state & (0x1 | 0x4)) or self.list_shown:
+            return None
+        n, line = self._line()
+        if SEP not in line:
+            return None
+        col = int(self.text.index('insert').split('.')[1])
+        starts = [a for a, _ in self._segments(line)]
+        if step < 0:
+            prev = [a for a in starts if a < col]
+            target = prev[-1] if prev else 0
+        else:
+            nxt = [a for a in starts if a > col]
+            target = nxt[0] if nxt else len(line)
+        self.text.mark_set('insert', f'{n}.{target}')
+        self.text.see('insert')
+        self._cancel_dwell()
+        self._dwell_job = self.app.root.after(self.dwell_ms, self._open_siblings)
+        return 'break'
+
+    def _cancel_dwell(self):
+        if self._dwell_job is not None:
+            try:
+                self.app.root.after_cancel(self._dwell_job)
+            except tk.TclError:
+                pass
+            self._dwell_job = None
+
+    def _codes(self, line: str) -> list[str]:
+        """Коды уровней строки, пока они находятся в дереве."""
+        out: list[str] = []
+        for part in line.split(SEP):
+            part = ' '.join(part.split())
+            hit = next((c for c in children_of(self.wb, out[-1] if out else None)
+                        if ' '.join(c.text.split()) == part), None)
+            if hit is None:
+                break
+            out.append(hit.id)
+        return out
+
+    def _open_siblings(self):
+        """Курсор стоит на уровне — вниз раскрываются его соседи."""
+        self._dwell_job = None
+        if not self.on():
+            return
+        n, line = self._line()
+        col = int(self.text.index('insert').split('.')[1])
+        segs = self._segments(line)
+        k = next((i for i, (a, b) in enumerate(segs) if a <= col <= b), None)
+        codes = self._codes(line)
+        if k is None or k >= len(codes):
+            return
+        parent = tuple(codes[:k])
+        kids = children_of(self.wb, parent[-1] if parent else None)
+        choices = [parent + (c.id,) for c in kids]
+        sel = next(i for i, p in enumerate(choices) if p[-1] == codes[k])
+        self._show_list(choices, sel)
+        self._replace = (n, k)
+
+    def _replace_level(self, new: Path) -> bool:
+        """Заменить уровень; уровни ниже — остаются, если такой же текст есть
+        у нового родителя, иначе снимаются (строка ждёт Tab)."""
+        n, k = self._replace
+        line = self.text.get(f'{n}.0', f'{n}.end')
+        tail = [' '.join(p.split()) for p in line.split(SEP)[k + 1:]]
+        path = list(new)
+        for part in tail:
+            hit = next((c for c in children_of(self.wb, path[-1])
+                        if ' '.join(c.text.split()) == part), None)
+            if hit is None:
+                break
+            path.append(hit.id)
+        self._set_line(n, self._path_text(tuple(path)))
+        self.close()
+        self._mark_ok()
+        return True
 
     def _backspace(self, e):
         """Сразу после разворота — вернуть набранное (как отмена дополнения)."""
