@@ -64,7 +64,7 @@ wheels = [
 
 [[package]]
 name = "orthofill"
-version = "0.3.0b1"
+version = "0.3.0b2"
 source = { virtual = "." }
 dependencies = [
     { name = "openpyxl" },

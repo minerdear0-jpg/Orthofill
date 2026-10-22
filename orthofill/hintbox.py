@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import tkinter as tk
+import tkinter.font as tkfont
 
 _WORD_END = re.compile(r'[A-Za-zА-Яа-яЁё]+$')
 _KIND = {'doctor': 'ваше слово', 'history': 'из ваших записей', 'item': 'пункт'}
@@ -28,6 +29,9 @@ class HintBox:
         self.prefix = ''
         self.list_shown = False
         self._forced = False            # открыто Ctrl+Space: и с 1–2 букв
+        self.phrase = ''                # серый хвост привычной фразы ('' — режим слов)
+        self._phrase_at = ''            # текст до курсора, к которому этот хвост
+        self._reopen = False            # Ctrl+→ взял слово — после отпускания показать остаток
         self._view = None
         self._size = None
         bg = text.cget('background')
@@ -39,7 +43,7 @@ class HintBox:
         for seq, fn in (('<Tab>', self._tab), ('<Down>', lambda e: self._move(1, e)),
                         ('<Up>', lambda e: self._move(-1, e)), ('<Return>', self._enter),
                         ('<Escape>', self._escape), ('<Control-space>', self._manual),
-                        ('<Right>', self._right)):
+                        ('<Right>', self._right), ('<Control-Right>', self._ctrl_right)):
             text.bind(seq, fn)
         text.bind('<FocusOut>', lambda e: self.close(), add='+')
         text.bind('<Button-1>', lambda e: self.close(), add='+')
@@ -51,13 +55,15 @@ class HintBox:
     # ---------- состояние ----------
     @property
     def visible(self) -> bool:
-        return bool(self.items)
+        return bool(self.items) or bool(self.phrase)
 
     def _enabled(self) -> bool:
         return bool(self.app.hints_on.get())
 
     def close(self):
         self.items, self.selected, self.prefix, self._forced = [], -1, '', False
+        self.phrase = self._phrase_at = ''
+        self._reopen = False
         self.tail.configure(text='')
         self.tail.place_forget()
         self.frame.place_forget()
@@ -71,6 +77,19 @@ class HintBox:
         t = self.text
         before = t.get('insert linestart', 'insert')
         after = t.get('insert', 'insert +1c')
+        self.phrase = self._phrase_at = ''     # прежний хвост фразы — не тянуть дальше
+        # привычная фраза — только в конце строки (хвост не закрывает текст);
+        # Ctrl+Space — явная просьба о словах: фразу пропустить
+        if after in ('', '\n') and not force:
+            cont = self.app.ctl.continuation(t.get('1.0', 'insert'))
+            if cont:
+                self.close()
+                self.phrase, self._phrase_at = cont, t.get('1.0', 'insert')
+                t.see('insert')
+                t.update_idletasks()
+                self._view = t.yview()
+                self._show_phrase()
+                return
         m = _WORD_END.search(before)
         if not m or (after and after.isalpha()):
             self.close()
@@ -86,6 +105,54 @@ class HintBox:
         self._show()
 
     # ---------- показ ----------
+    def _show_phrase(self):
+        """Хвост фразы — сколько помещается до края поля (по словам, с «…»);
+        принимается ровно показанное."""
+        t = self.text
+        box = t.bbox('insert')
+        if box is None:
+            self.close()
+            return
+        self.frame.place_forget()
+        self.list_shown = False
+        font = tkfont.Font(font=self.tail.cget('font'))
+        room = t.winfo_width() - box[0] - 12
+        shown = self.phrase
+        if font.measure(shown) > room:
+            words = re.findall(r'\s*\S+', self.phrase)
+            shown = ''
+            for w in words:
+                if font.measure(shown + w + '…') > room:
+                    break
+                shown += w
+            if not shown.strip():
+                self.close()
+                return
+            self.phrase = shown              # принять — только видимое
+            shown += '…'
+        self.tail.configure(text=shown)
+        self.tail.place(x=box[0], y=box[1], bordermode='outside')
+
+    def accept_phrase(self, one_word: bool = False) -> bool:
+        """Принять хвост фразы целиком или одно следующее слово (Ctrl+→)."""
+        t = self.text
+        if not self.phrase or t.get('1.0', 'insert') != self._phrase_at:
+            self.close()                    # текст изменился — хвост устарел
+            return False
+        chunk = re.match(r'\s*\S+', self.phrase).group() if one_word else self.phrase
+        t.configure(autoseparators=False)   # одна отмена возвращает набранное
+        t.edit_separator()
+        t.insert('insert', chunk, ())
+        t.edit_separator()
+        t.configure(autoseparators=True)
+        rest = self.phrase[len(chunk):]
+        self.close()
+        if one_word and rest.strip():
+            self.phrase, self._phrase_at = rest, t.get('1.0', 'insert')
+            self._reopen = True
+            self._show_phrase()
+        return True
+
     def _show(self):
         t = self.text
         box = t.bbox('insert')
@@ -171,6 +238,9 @@ class HintBox:
 
     def _on_key_release(self, e):
         if e.keysym in _NAV:
+            if self._reopen and e.keysym == 'Right':    # отпустили Ctrl+→ — остаток виден
+                self._reopen = False
+                return
             self.close()
             return
         if e.keysym in _KEEP or e.keysym == 'space' and e.state & 0x4:
@@ -180,6 +250,8 @@ class HintBox:
     def _tab(self, e):
         if e is not None and e.state & (0x1 | 0x4):      # Shift/Ctrl+Tab — не наше
             return None
+        if self.phrase:
+            return 'break' if self.accept_phrase() else None
         if self.items and (self.list_shown or self.tail.cget('text')) and self.accept():
             return 'break'
         return None
@@ -204,12 +276,20 @@ class HintBox:
         """→ принимает серый хвост (как в браузере и VS Code); иначе — курсор вправо."""
         if e is not None and e.state & (0x1 | 0x4):
             return None
+        if self.phrase:
+            return 'break' if self.accept_phrase() else None
         if self.items and self.tail.cget('text') and self.accept(0 if self.selected < 0 else None):
             return 'break'
         return None
 
+    def _ctrl_right(self, e):
+        """Ctrl+→ — одно слово привычной фразы (как в fish); иначе — как обычно."""
+        if self.phrase and not (e is not None and e.state & 0x1):
+            return 'break' if self.accept_phrase(one_word=True) else None
+        return None
+
     def _escape(self, e):
-        if self.items:
+        if self.items or self.phrase:
             self.close()
             return 'break'
         return None
@@ -225,7 +305,7 @@ class HintBox:
     def _on_yscroll(self, first, last):
         if self._yscroll:
             self.text.tk.call(*self._yscroll.split(), first, last)
-        if self.items and self._view is not None and (float(first), float(last)) != tuple(
+        if self.visible and self._view is not None and (float(first), float(last)) != tuple(
                 float(v) for v in self._view):
             self.close()
 
@@ -237,5 +317,7 @@ class HintBox:
         size = (e.width, e.height)
         if size != self._size:
             self._size = size
-            if self.items:
+            if self.phrase:
+                self.app.root.after_idle(lambda: self.phrase and self._show_phrase())
+            elif self.items:
                 self.app.root.after_idle(lambda: self.items and self._show())
