@@ -62,3 +62,11 @@ def test_word_list_read_as_phrase():
     """Событие unknown — только список слов (без записи), в порядке записи."""
     out = scrub_event({'event': 'unknown', 'words': ['Иванова', 'Мария', 'Петровна', 'квакозябра']})
     assert out['words'] == ['‹ФИО›', '‹ФИО›', '‹ФИО›', 'квакозябра']
+
+
+def test_selftest_fails_without_names(monkeypatch):
+    """Сборка без names_ru.txt — вырезание ФИО ослабло бы молча; самопроверка exe это ловит."""
+    import orthofill.scrub as sc
+    from orthofill.ui import selftest
+    monkeypatch.setattr(sc, 'NAMES', frozenset())
+    assert selftest() == 1

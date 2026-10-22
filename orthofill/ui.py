@@ -1512,6 +1512,9 @@ def selftest() -> int:
         root.destroy()
         if not _resource(CHANGELOG).is_file():          # забыт --add-data в сборке
             raise FileNotFoundError(f'нет {CHANGELOG} в сборке')
+        from . import scrub
+        if len(scrub.NAMES) < 100:                      # забыт names_ru.txt — ФИО не вырезались бы
+            raise FileNotFoundError('нет names_ru.txt в сборке')
         return 0
     except Exception as e:
         print(f'selftest-ui: {e}', file=sys.stderr)
