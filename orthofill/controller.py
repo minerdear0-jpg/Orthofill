@@ -248,8 +248,24 @@ class Controller:
                             f'⚠ эталоны {ok}/{len(results)} — подробнее')
 
     # ---------- протокол ----------
-    def generate(self, raw: str, copy: bool = True) -> GenerateResult:
-        """copy=False — пересобрать без копирования (смена пресета)."""
+    def preview(self, raw: str, tokens=()) -> GenerateResult:
+        """Черновик протокола при наборе: без журнала, буфера и диагностики."""
+        if self.workbook is None or not raw.strip():
+            return GenerateResult('', '', [], '', False)
+        try:
+            p = build_protocol(self.workbook, raw, list(tokens))
+        except Exception as e:
+            self._log_error('preview', e)
+            return GenerateResult('', f'✗ Ошибка: {e}', [], '', False)
+        self._preview = (raw, list(tokens), p)
+        defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
+        return GenerateResult(p.text, 'черновик — Ctrl+Enter подтвердить', p.warnings, defaults,
+                              False, p.rows)
+
+    def generate(self, raw: str, copy: bool = True, tokens=(), text: str | None = None) -> GenerateResult:
+        """Подтверждение протокола (Ctrl+Enter): в журнал и, если copy, в буфер.
+        text — протокол, поправленный руками: в буфер уходит он.
+        copy=False — пересобрать без копирования (смена пресета)."""
         def fail(status):
             return GenerateResult('', status, [], '', False)
         if self.workbook is None:
@@ -257,7 +273,7 @@ class Controller:
         if not raw.strip():
             return fail('Введите краткую запись')
         try:
-            p = build_protocol(self.workbook, raw)
+            p = build_protocol(self.workbook, raw, list(tokens))
         except Exception as e:
             self._log_error('generate', e)
             return fail(f'✗ Ошибка: {e}')
@@ -272,10 +288,13 @@ class Controller:
         self.last_copy_edited = False
         self.last_entry_id = self.journal.log_generate(raw, p, self.workbook.sha256,
                                                        self.preset_id)
-        if copy:
+        self._last_shown = p.text
+        edited = text is not None and text.strip() != p.text.strip()
+        if copy and edited:
+            self.copy(text)             # буфер, журнал и событие copy (с правкой)
+        elif copy:
             self.clipboard(p.text)
             self.journal.log_copy(self.last_entry_id, p.text)
-        self._last_shown = p.text
         if p.dictionary_hits:
             self.presets.count_hits(self.preset_id, p.dictionary_hits)
             for e in self.workbook.dictionary:
@@ -288,7 +307,7 @@ class Controller:
                       raw_norm=facts['raw_norm'], facts=facts,
                       lines=p.lines, warnings=p.warnings, defaults=p.defaults,
                       preset=self._preset_ref(), sha256=self.workbook.sha256,
-                      dictionary_hits=p.dictionary_hits)
+                      dictionary_hits=p.dictionary_hits, tokens=[list(t) for t in tokens])
         defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
         status = 'Скопировано в буфер' if copy else 'Протокол пересобран (в буфер не копировался)'
         return GenerateResult(p.text, status, p.warnings, defaults, copy, p.rows)
@@ -297,17 +316,29 @@ class Controller:
     def search(self, query: str) -> list[SearchHit]:
         return search_items(self.workbook, query) if self.workbook else []
 
-    def find_unknown(self) -> list[tuple[int, int, str]]:
-        """Непонятые слова последней записи (самопроверка). Отдельно от generate:
-        окно вызывает это после показа протокола — Ctrl+Enter не ждёт."""
-        if self.workbook is None or self.last_protocol is None:
+    def find_unknown(self, raw: str | None = None, tokens=()) -> list[tuple[int, int, str]]:
+        """Непонятые слова записи (самопроверка): последней подтверждённой или —
+        если raw задан — черновика. Слова-токены не подчёркиваются: их врач принял."""
+        if self.workbook is None:
             return []
+        draft = raw is not None
+        if not draft and self.last_protocol is None:
+            return []
+        if draft:
+            prev = getattr(self, '_preview', None)
+            # база самопроверки — без токенов (она пересобирает запись без них)
+            base = signature(prev[2]) if prev and prev[0] == raw and not prev[1] else None
+        else:
+            raw, base = self._last_raw, getattr(self, '_last_sig', None)
         try:
-            found = unknown_words(self.workbook, self._last_raw, getattr(self, '_last_sig', None))
+            found = unknown_words(self.workbook, raw, base)
         except Exception as e:      # подчёркивание — подсказка, протокол важнее
             self._log_error('unknown_words', e)
             return []
-        self._log('unknown', entry_id=self.last_entry_id, words=[w for *_, w in found])
+        bound = {self.presets.norm_word(w) for w, _ in tokens}
+        found = [f for f in found if self.presets.norm_word(f[2]) not in bound]
+        if not draft:
+            self._log('unknown', entry_id=self.last_entry_id, words=[w for *_, w in found])
         return found
 
     def word_candidates(self, raw: str) -> list[str]:
@@ -335,10 +366,9 @@ class Controller:
             return AddResult(new, line, status, code, [],
                              self.presets.norm_word(_clean_word(word)) if word else None)
         replaced = len(new.splitlines()) == len(current_text.splitlines())
-        self.copy(new)
         section = wb.by_id.get(code[0])
         where = section.text.strip().rstrip(':') if section else ''
-        status = f'✓ Добавлено: {label} → {where}. Протокол скопирован.'
+        status = f'✓ Добавлено: {label} → {where}. Ctrl+Enter — подтвердить и скопировать.'
         self._log('add_item', code=code, text=item.text, replaced=replaced, word=word,
                   raw=self._last_raw, preset=self._preset_ref())
         learned = None
@@ -347,6 +377,12 @@ class Controller:
             learned = self.presets.norm_word(_clean_word(word))
         candidates = [] if word else self.word_candidates(self._last_raw)
         return AddResult(new, line, status, code, candidates, learned)
+
+    def bind_word(self, word: str, code: str) -> str:
+        """«Добавить пункт» к слову записи: слово запоминается (словарь врача), а
+        протокол пересобирает окно — строка не вставляется и ничего не копируется."""
+        self._log('bind_word', word=word, code=code, preset=self._preset_ref())
+        return self.learn(word, code)
 
     def learn(self, word: str, code: str) -> str:
         w = self.presets.norm_word(_clean_word(word))

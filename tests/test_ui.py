@@ -105,7 +105,7 @@ def test_add_item_flow(app):
     assert app.add_list.get(0).startswith("Изгиб третьего порядка")
     app._add_selected(0)
     assert "Юстировка дуги: Изгиб третьего порядка." in app.out_txt.get("1.0", "end")
-    assert copied[-1] == app.out_txt.get("1.0", "end-1c")
+    assert copied[-1] != app.out_txt.get("1.0", "end-1c")      # 0.3: в буфер — только Ctrl+Enter
     assert "section" in app.out_txt.tag_names("1.0")                 # вид протокола не потерян
     assert "квакозябра" in app.learn_text()                            # вопрос с кандидатом
     app._learn_yes()
