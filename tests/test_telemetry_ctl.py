@@ -155,3 +155,13 @@ def test_about_shows_telemetry_line(app):
     d = AboutDialog(app)
     assert 'Телеметрия:' in d.info_text
     d.top.destroy()
+
+
+def test_perf_hints_and_unknown(ctl, order_xlsx):
+    ctl.import_xlsx(order_xlsx)
+    ctl.set_diagnostics(True)
+    ctl.perf_window = 0
+    ctl.hints('лиг')
+    ctl.find_unknown('лигатурная, квакозябра')
+    keys = set().union(*(e.keys() for e in _events(ctl) if e['event'] == 'perf'))
+    assert 'hints_ms_med' in keys and 'unknown_ms_med' in keys

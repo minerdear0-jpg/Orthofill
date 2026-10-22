@@ -466,11 +466,13 @@ class Controller:
             base = signature(prev[2]) if prev and prev[0] == raw and not prev[1] else None
         else:
             raw, base = self._last_raw, getattr(self, '_last_sig', None)
+        t0 = time.perf_counter()
         try:
             found = unknown_words(self.workbook, raw, base)
         except Exception as e:      # подчёркивание — подсказка, протокол важнее
             self._log_error('unknown_words', e)
             return []
+        self.perf('unknown', (time.perf_counter() - t0) * 1000)
         bound = {self.presets.norm_word(w) for w, _ in tokens}
         found = [f for f in found if self.presets.norm_word(f[2]) not in bound]
         if not draft:
@@ -556,12 +558,15 @@ class Controller:
         wb = self.workbook
         if wb is None:
             return []
+        t0 = time.perf_counter()
         n = self.journal._db.execute('SELECT COUNT(*) FROM entries').fetchone()[0]
         key = (self.preset_id, wb.sha256, n, tuple((e.word, e.code) for e in wb.dictionary))
         if getattr(self, '_hint_key', None) != key:
             self._hint_index = build_index(wb, self.journal.raw_words(self.preset_id))
             self._hint_key = key
-        return self._hint_index.suggest(prefix, min_len=1 if force else 3)
+        out = self._hint_index.suggest(prefix, min_len=1 if force else 3)
+        self.perf('hints', (time.perf_counter() - t0) * 1000)
+        return out
 
     def continuation(self, text_before: str) -> str:
         """Серый хвост привычной фразы / следующая фраза — по записям пресета."""
