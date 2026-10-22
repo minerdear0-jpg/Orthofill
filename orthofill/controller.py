@@ -33,6 +33,7 @@ CASE_KINDS = {
     'program': 'Программа',
     'classifier': 'Классификатор',
     'unknown': 'Не знаю',
+    'exclude': 'Исключить строку',
 }
 # Повторный Ctrl+Enter с похожей записью вскоре после первого — врач поправил запись,
 # а не перешёл к следующему пациенту
@@ -815,6 +816,55 @@ class Controller:
             corrected_raw=corrected_raw if kind == 'me' else None,
             comment=comment.strip(), preset=self._preset_ref(), sha256=self.workbook.sha256)
         return 'Спасибо, случай сохранён'
+
+    # ---------- «Ошибка → Исключить» (0.5 b6) ----------
+    def line_source(self, code: str, raw: str) -> str:
+        """Откуда строка протокола: path — строка оболочки · default — есть и в
+        пустой записи · always · condition · note — из слов записи."""
+        from .engine import _effective_when, effective_condition
+        wb = self.workbook
+        if self.shell_mode:
+            from .shell import parse_line
+            for line in raw.splitlines():
+                p = parse_line(wb, line) if '›' in line else None
+                if p and code in p:
+                    return 'path'
+        if code in {c for c, _ in build_protocol(wb, '').lines}:
+            return 'default'
+        it = wb.by_id.get(code)
+        when = _effective_when(wb).get(code)
+        if it is not None and effective_condition(it, wb) is not None and when != 'mentioned':
+            return 'condition'
+        if when == 'always':
+            return 'always'
+        return 'note'
+
+    def exclude_case(self, codes: list[tuple[str, ...]], raw: str, rows_text: list[str]) -> str:
+        """«Ошибка → Исключить»: этой строки в отчёте быть не должно. Пишется
+        всегда (явное действие врача), с телеметрией — сразу на сервер."""
+        import uuid
+        cid = uuid.uuid4().hex
+        wb = self.workbook
+        try:
+            p = self._build(raw)
+            lines, defaults, warnings = p.lines, p.defaults, p.warnings
+        except Exception:
+            lines, defaults, warnings = [], [], []
+        excluded = []
+        for row_codes, text in zip(codes, rows_text):
+            leaf = row_codes[-1]
+            group = row_codes[0] if len(row_codes) > 1 else None
+            excluded.append({'code': leaf, 'group': group, 'text': text,
+                             'source': self.line_source(leaf, raw)})
+        self._diag.write('case', kind='exclude', kind_label=CASE_KINDS['exclude'], case_id=cid,
+                         entry_id=self.last_entry_id, raw=raw,
+                         mode='shell' if self.shell_mode else 'comma',
+                         lines=lines, defaults=defaults, warnings=warnings, excluded=excluded,
+                         preset=self._preset_ref(), sha256=wb.sha256 if wb else None)
+        return cid
+
+    def exclude_undo(self, case_id: str) -> None:
+        self._diag.write('case', kind='exclude_undo', case_id=case_id, preset=self._preset_ref())
 
     def save_reference(self, raw: str, final_text: str) -> str:
         wb = self.workbook
