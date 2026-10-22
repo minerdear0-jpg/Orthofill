@@ -139,6 +139,17 @@ class Journal:
     def mark_reference(self, entry_id: int, case_id: str) -> None:
         self._exec('UPDATE entries SET reference_case_id=? WHERE id=?', (case_id, entry_id))
 
+    def raw_words(self, preset_id: int | None, limit: int = 2000) -> dict[str, int]:
+        """Слова прошлых записей пресета → сколько раз встречались (для подсказок)."""
+        from .hints import words_of
+        out: dict[str, int] = {}
+        for (raw,) in self._db.execute(
+                'SELECT raw FROM entries WHERE preset_id IS ? ORDER BY id DESC LIMIT ?',
+                (preset_id, limit)):
+            for w in words_of(raw or ''):
+                out[w] = out.get(w, 0) + 1
+        return out
+
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         row = self._db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
         return row[0] if row else default

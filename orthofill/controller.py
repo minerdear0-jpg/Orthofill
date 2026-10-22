@@ -377,6 +377,20 @@ class Controller:
     def skip_learning(self, code: str) -> None:
         self._log('learn_skip', code=code, raw=self._last_raw, preset=self._preset_ref())
 
+    # ---------- подсказки ----------
+    def hints(self, prefix: str) -> list:
+        """Подсказки к началу слова. Индекс — один на пресет, его словарь и журнал."""
+        from .hints import build_index
+        wb = self.workbook
+        if wb is None:
+            return []
+        n = self.journal._db.execute('SELECT COUNT(*) FROM entries').fetchone()[0]
+        key = (self.preset_id, wb.sha256, n, tuple((e.word, e.code) for e in wb.dictionary))
+        if getattr(self, '_hint_key', None) != key:
+            self._hint_index = build_index(wb, self.journal.raw_words(self.preset_id))
+            self._hint_key = key
+        return self._hint_index.suggest(prefix)
+
     # ---------- редактор пресета ----------
     def open_draft(self, preset_id: int | None = None) -> Draft:
         """Черновик пресета для редактора — один на программу."""
