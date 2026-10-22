@@ -187,3 +187,39 @@ def test_chips_skip_numbers_and_service(app):
     words = app._note_words()
     assert "6" not in words and "-" not in words and "на" not in words and "13-23" not in words
     assert "лигатурная" in words
+
+
+def test_whats_new_link_opens_about_and_hides(app):
+    assert app.news_lbl.winfo_manager()          # новая версия — ссылка видна
+    win = app.about()
+    app.root.update()
+    from orthofill import VERSION_LABEL
+    body = win.news_txt.get('1.0', 'end')
+    assert body.lstrip().startswith(VERSION_LABEL)        # текущая версия сверху
+    assert '0.1 beta' in body and '**' not in body
+    assert win.news_txt.tag_ranges('bold')
+    assert not app.news_lbl.winfo_manager()       # показано — ссылка ушла
+    assert not app.ctl.whats_new_pending()
+    win.top.destroy()
+
+
+def test_about_without_changelog(app, monkeypatch):
+    import orthofill.ui as ui
+    monkeypatch.setattr(ui, '_resource', lambda name: ui.Path('/нет/такого/файла'))
+    win = app.about()
+    assert 'не найден' in win.news_txt.get('1.0', 'end')
+    win.top.destroy()
+
+
+def test_selftest_checks_changelog(monkeypatch):
+    import orthofill.ui as ui
+    assert ui.selftest() == 0
+    monkeypatch.setattr(ui, '_resource', lambda name: ui.Path('/нет/такого/файла'))
+    assert ui.selftest() == 1
+
+
+def test_whats_new_link_leaves_on_first_action(app):
+    assert app.news_lbl.winfo_manager()
+    _gen(app, "активация, рабочий")
+    assert not app.news_lbl.winfo_manager()       # не мешает работе
+    assert app.ctl.whats_new_pending()            # но не открыт — покажется при запуске

@@ -96,3 +96,13 @@ def test_status_names_group(ctl, order_xlsx):
     ctl.import_xlsx(order_xlsx)
     res = ctl.add_item(ctl.generate("лигатурная").text, "4d1")
     assert "Смена одиночных эластических лигатур" in res.status
+
+
+def test_whats_new_pending_once_per_version(ctl):
+    from orthofill import VERSION_LABEL
+    assert ctl.whats_new_pending()
+    ctl.mark_whats_new_seen()
+    assert not ctl.whats_new_pending()
+    ctl.journal.set_setting('seen_version', '0.1 beta')
+    assert ctl.whats_new_pending()
+    assert ctl.journal.get_setting('seen_version') != VERSION_LABEL

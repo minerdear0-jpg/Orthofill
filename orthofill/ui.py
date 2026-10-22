@@ -18,6 +18,7 @@ def window_title() -> str:
     """Версия и код сборки — сразу видно, какой код запущен."""
     from .buildinfo import build_id
     return f'{TITLE} · сборка {build_id()}'
+CHANGELOG = 'CHANGELOG.md'
 REMINDER = 'Проверьте протокол перед вставкой в служебное ПО'
 DISCLAIMER = 'Программа формирует черновик протокола; ответственность за содержание несёт врач.'
 
@@ -58,6 +59,8 @@ class App:
         self.diag_var.set(self.ctl.diagnostics)
         self._show_diag()
         self._show_file_status()
+        if self.ctl.whats_new_pending():
+            self.news_lbl.pack(side='left')
         self.raw_txt.focus_set()
 
     # ---------- построение ----------
@@ -219,6 +222,13 @@ class App:
         line.pack(anchor='w', fill='x')
         self.status_lbl = ttk.Label(line, text='')
         self.status_lbl.pack(side='left')
+        # первый запуск новой версии: ссылка в пустой строке статуса вместо всплывающего
+        # окна; уходит при первом действии, вернётся при запуске, пока её не откроют
+        link = tkfont.Font(font=self.f_small)
+        link.configure(underline=True)
+        self.news_lbl = ttk.Label(line, text=f'Обновлено до {VERSION_LABEL} — что нового?',
+                                  foreground=ACCENT, font=link, cursor='hand2')
+        self.news_lbl.bind('<Button-1>', lambda e: self.about())
         # появляется после копирования исправленного протокола
         self.mark_prompt = ttk.Button(line, text='Отметить, что пошло не так',
                                       style='Accent.TButton', command=self.mark_case)
@@ -382,6 +392,7 @@ class App:
     def _status(self, text: str, warnings=(), defaults_line: str = '', ask_mark=False,
                 undo=False, rows=()):
         self.status_lbl.configure(text=text, foreground='')
+        self.news_lbl.pack_forget()
         self.unlearn_btn.pack_forget()
         if undo:
             self.undo_btn.pack(side='left', padx=(12, 0))
@@ -846,13 +857,10 @@ class App:
         txt.insert('1.0', '\n'.join(self.ctl.details) or 'Замечаний нет.')
         txt.configure(state='disabled')
 
-    def about(self):
-        wb = self.ctl.workbook
-        messagebox.showinfo(TITLE, f'{window_title()}\n\n{DISCLAIMER}\n\n'
-                                   f'Пресет:\n{_preset_about(self.ctl)}\n\n'
-                                   f'Журнал:\n{self.ctl.journal.db_path}\n\n'
-                                   f'Диагностика ({"включена" if self.ctl.diagnostics else "выключена"}):\n'
-                                   f'{self.ctl.diag_dir}')
+    def about(self) -> AboutDialog:
+        self.ctl.mark_whats_new_seen()
+        self.news_lbl.pack_forget()
+        return AboutDialog(self)
 
     def _toggle_diag(self):
         self.ctl.set_diagnostics(self.diag_var.get())
@@ -935,10 +943,66 @@ def selftest() -> int:
         ttk.Button(root, text='Проверка', style='Accent.TButton').pack()
         root.update()
         root.destroy()
+        if not _resource(CHANGELOG).is_file():          # забыт --add-data в сборке
+            raise FileNotFoundError(f'нет {CHANGELOG} в сборке')
         return 0
     except Exception as e:
         print(f'selftest-ui: {e}', file=sys.stderr)
         return 1
+
+
+class AboutDialog:
+    """«О программе»: версия, «Что нового» (текущая версия сверху), где лежат данные."""
+
+    def __init__(self, app: App):
+        from .changelog import parse, spans
+        ctl = app.ctl
+        self.top = win = tk.Toplevel(app.root)
+        win.title(f'{TITLE} — о программе')
+        win.geometry('600x620')
+        win.transient(app.root)
+        box = ttk.Frame(win, padding=(14, 12, 14, 6))
+        box.pack(fill='x')
+        ttk.Label(box, text=window_title(), font=app.f_title).pack(anchor='w')
+        ttk.Label(box, text=DISCLAIMER, foreground=MUTED, wraplength=560).pack(anchor='w', pady=(4, 0))
+        ttk.Label(box, text='Что нового', font=app.f_label).pack(anchor='w', pady=(12, 0))
+
+        f, txt = app._text(win, 16)
+        f.pack(fill='both', expand=True, padx=14)
+        self.news_txt = txt
+        fam = app.f_text.actual('family')
+        txt.tag_configure('version', font=(fam, 12, 'bold'), foreground=ACCENT,
+                          spacing1=10, spacing3=4)
+        txt.tag_configure('bold', font=(fam, 11, 'bold'))
+        txt.tag_configure('bullet', lmargin1=6, lmargin2=24, spacing1=2)
+        path = _resource(CHANGELOG)
+        try:
+            releases = parse(path.read_text(encoding='utf-8'))
+        except OSError:
+            releases = []
+        if not releases:
+            txt.insert('end', f'Журнал изменений не найден: {path}')
+        for k, rel in enumerate(releases):
+            txt.insert('end', ('' if k == 0 else '\n') + rel.title + '\n', 'version')
+            for line in rel.lines:
+                tags: tuple[str, ...] = ()
+                if line.startswith('- '):
+                    line, tags = '•  ' + line[2:], ('bullet',)
+                for part, bold in spans(line):
+                    txt.insert('end', part, tags + (('bold',) if bold else ()))
+                txt.insert('end', '\n', tags)
+        txt.configure(state='disabled')
+
+        diag = 'включена' if ctl.diagnostics else 'выключена'
+        info = (f'Пресет: {_preset_about(ctl)}\n'
+                f'Журнал: {ctl.journal.db_path}\n'
+                f'Диагностика ({diag}): {ctl.diag_dir}')
+        foot = ttk.Frame(win, padding=(14, 8, 14, 12))
+        foot.pack(fill='x')
+        ttk.Label(foot, text=info, foreground=MUTED, font=app.f_small,
+                  wraplength=440, justify='left').pack(side='left', anchor='w')
+        ttk.Button(foot, text='Закрыть', command=win.destroy).pack(side='right', anchor='s')
+        win.bind('<Escape>', lambda e: win.destroy())
 
 
 class MarkCaseDialog:

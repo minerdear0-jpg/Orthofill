@@ -114,6 +114,15 @@ class Controller:
         return {'id': self.preset_id, 'name': self.workbook.name} if self.workbook else None
 
     # ---------- пресеты ----------
+    def whats_new_pending(self) -> bool:
+        """Эта версия запущена впервые и «Что нового» ещё не открывали."""
+        from . import VERSION_LABEL
+        return self.journal.get_setting('seen_version') != VERSION_LABEL
+
+    def mark_whats_new_seen(self) -> None:
+        from . import VERSION_LABEL
+        self.journal.set_setting('seen_version', VERSION_LABEL)
+
     def startup(self) -> None:
         self.diagnostics = self.journal.get_setting('diagnostics') == '1'
         saved = self.journal.get_setting('preset_id')

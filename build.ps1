@@ -45,6 +45,7 @@ Write-Host "Версия $Version, сборка $build"
 $common = @('--noconfirm', '--clean', '--windowed', '--paths', '.',
             '--icon', 'assets\orthofill.ico',
             '--add-data', 'assets\orthofill.ico;assets',
+            '--add-data', 'CHANGELOG.md;.',      # «О программе» → «Что нового»
             '--collect-data', 'sv_ttk')
 
 try {
@@ -55,6 +56,7 @@ try {
     SelfTest dist\Orthofill\Orthofill.exe
     Copy-Item order.xlsx dist\Orthofill\order.xlsx      # пример классификатора с эталоном
     Copy-Item README.md dist\Orthofill\README.md
+    Copy-Item CHANGELOG.md dist\Orthofill\CHANGELOG.md
     Compress-Archive -Path dist\Orthofill -DestinationPath "dist\Orthofill-$Version-portable.zip" -Force
 
     Step 'Exe одним файлом'
