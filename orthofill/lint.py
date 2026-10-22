@@ -83,9 +83,31 @@ def lint(wb: Workbook) -> list[Finding]:
             out.append(Finding(it.id, 'empty_group', 'warning', f'«{_title(it)}»: группа без вариантов'))
 
     out += _logic(wb)
+    out += _cancels(wb)
 
     order = {it.id: k for k, it in enumerate(wb.items)}
     return sorted(out, key=lambda f: order.get(f.code.split(',')[0], 0))
+
+
+def _cancels(wb: Workbook) -> list[Finding]:
+    """Ветка «нет» нужна, только если пункт появляется сам: группа с вариантом
+    по умолчанию или пункт «всегда»/по условию."""
+    out = []
+    if not any(it.cancel for it in wb.items):
+        return out
+    from .engine import build_protocol
+    base = {c for c, _ in build_protocol(wb, '').lines}     # умолчания — и правила движка
+    for it in wb.items:
+        if it.cancel is None:
+            continue
+        shows_itself = (it.default is not None or it.id in base if it.children
+                        else it.when in (None, 'always') or it.condition is not None
+                        or it.id in base)
+        if not shows_itself:
+            out.append(Finding(it.id, 'cancel_useless', 'warning',
+                               f'«{_title(it)}»: ветка «нет» лишняя — без строки пункт и так '
+                               f'не выводится'))
+    return out
 
 
 def _logic(wb: Workbook) -> list[Finding]:

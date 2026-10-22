@@ -135,12 +135,16 @@ class App:
         self.hints_on = tk.BooleanVar(value=self.ctl.journal.get_setting('hints', '1') == '1')
         hints_cb = ttk.Checkbutton(right, text='Подсказки', variable=self.hints_on,
                                    command=self._toggle_hints)
+        self.shell_var = tk.BooleanVar(value=False)    # запись как оболочка (0.5) — у пресета
+        shell_cb = ttk.Checkbutton(right, text='Оболочка', variable=self.shell_var,
+                                   command=self._toggle_shell)
         self.diag_var = tk.BooleanVar(value=False)
         diag_cb = ttk.Checkbutton(right, text='Диагностика', variable=self.diag_var,
                                   command=self._toggle_diag)
         self.diag_btn = ttk.Button(right, text='Папка', command=self.open_diag_folder)
         # широко — в ряд; узко — сеткой 2×2 (см. _relayout)
-        self.bar_widgets = [self.details_btn, topmost_cb, hints_cb, diag_cb, self.diag_btn]
+        self.bar_widgets = [self.details_btn, topmost_cb, hints_cb, shell_cb, diag_cb,
+                            self.diag_btn]
         self._apply_topmost()
 
         # Ввод и протокол
@@ -175,6 +179,8 @@ class App:
         f.pack(fill='both', expand=True)
         from .hintbox import HintBox
         self.hint_box = HintBox(self, self.raw_txt)
+        from .shellbox import ShellBox
+        self.shell_box = ShellBox(self, self.raw_txt)   # режим «Оболочка» (0.5)
         from .behavior import NoteStats
         self.note_stats = NoteStats()
 
@@ -584,6 +590,8 @@ class App:
                       state='normal' if self.ctl.workbook else 'disabled')
         self._track_menu(m)
         wb = self.ctl.workbook
+        if hasattr(self, 'shell_box'):
+            self._sync_shell()
         self.preset_var.set(self.ctl.preset_id if self.ctl.preset_id is not None else -1)
         self.preset_btn.configure(text=f'Пресет: {wb.name}' if wb else 'Пресет')
         self._show_preset_name()
@@ -898,6 +906,8 @@ class App:
     def _offer_phrase(self, raw: str):
         from .phrases import parse_template, render
         self.phrase_bar.pack_forget()
+        if self.ctl.shell_mode:           # .фразы — режим «через запятую»
+            return
         prop = self.ctl.proposal(raw) if raw.strip() else None
         self._phrase_prop = prop
         if prop:
@@ -929,7 +939,10 @@ class App:
         t = self.raw_txt
         for tag in ('unknown', 'learned'):
             t.tag_remove(tag, '1.0', 'end')
+        cur = t.index('insert').split('.')[0]
         for s, e, _ in spans:
+            if self.ctl.shell_mode and t.index(f'1.0+{s}c').split('.')[0] == cur:
+                continue            # строку оболочки ещё набирают — не «непонята»
             t.tag_add('unknown', f'1.0+{s}c', f'1.0+{e}c')
 
     def _unmark_unknown(self, e):
@@ -1026,7 +1039,7 @@ class App:
         self._status(res.status)
         if res.learned:
             self._show_learned(word)
-        else:
+        elif not self.ctl.shell_mode:     # в оболочке слов нет — строки-пути
             self._ask_learning(res.code, res.candidates)
 
     def _bind_word(self, word: str, code: str):
@@ -1428,6 +1441,18 @@ class App:
             import subprocess
             subprocess.Popen(['xdg-open', str(d)])
 
+    def _toggle_shell(self):
+        self.ctl.set_shell_mode(bool(self.shell_var.get()))
+        self.ctl.track('ui', name='shell_on' if self.shell_var.get() else 'shell_off')
+        self._apply_shell_mode()
+
+    def _sync_shell(self):
+        """Флажок «Оболочка» — как у текущего пресета."""
+        on = self.ctl.shell_mode
+        if bool(self.shell_var.get()) != on:
+            self.shell_var.set(on)
+            self._apply_shell_mode()
+
     def _toggle_hints(self):
         self.ctl.journal.set_setting('hints', '1' if self.hints_on.get() else '0')
         self.hint_box.close()
@@ -1452,6 +1477,13 @@ class App:
         out = self.note_stats.summary()
         self.note_stats.reset()
         return out
+
+    def _apply_shell_mode(self):
+        """Режим записи сменился (флажок или пресет): подсказки слов или оболочка."""
+        self.hint_box.close()
+        self.shell_box.close()
+        self.shell_box.update()
+        self._schedule_live()
 
     def _session_start(self):
         import platform

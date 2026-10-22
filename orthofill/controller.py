@@ -374,6 +374,45 @@ class Controller:
                             if ok == len(results) else
                             f'⚠ эталоны {ok}/{len(results)} — подробнее')
 
+    # ---------- оболочка (0.5) ----------
+    @property
+    def shell_mode(self) -> bool:
+        """Запись как оболочка — для текущего пресета (переключатель)."""
+        if self.preset_id is None:
+            return False
+        cache = self.__dict__.setdefault('_shell_cache', {})
+        if self.preset_id not in cache:         # спрашивается на каждое нажатие — из памяти
+            cache[self.preset_id] = self.journal.get_setting(f'shell:{self.preset_id}') == '1'
+        return cache[self.preset_id]
+
+    def set_shell_mode(self, on: bool) -> None:
+        if self.preset_id is not None:
+            self.journal.set_setting(f'shell:{self.preset_id}', '1' if on else '0')
+            self.__dict__.setdefault('_shell_cache', {})[self.preset_id] = on
+
+    def shell_synonyms(self) -> dict[str, str]:
+        """Слова врача (словарь) — синонимы узлов в оболочке."""
+        wb = self.workbook
+        return {e.word: e.code for e in wb.dictionary if e.code} if wb else {}
+
+    def _build(self, raw: str, tokens=()) -> Protocol:
+        if self.shell_mode:
+            from .shellproto import shell_protocol
+            return shell_protocol(self.workbook, raw)
+        return build_protocol(self.workbook, raw, list(tokens))
+
+    def _shell_unknown(self, raw: str) -> list[tuple[int, int, str]]:
+        """Непонятые строки оболочки — целиком."""
+        from .shell import is_leaf, parse_line
+        out, pos = [], 0
+        for line in raw.split('\n'):
+            if line.strip():
+                path = parse_line(self.workbook, line)
+                if path is None or not is_leaf(self.workbook, path):
+                    out.append((pos, pos + len(line), line))
+            pos += len(line) + 1
+        return out
+
     # ---------- протокол ----------
     def preview(self, raw: str, tokens=()) -> GenerateResult:
         """Черновик протокола при наборе: без журнала, буфера и диагностики."""
@@ -381,7 +420,7 @@ class Controller:
             return GenerateResult('', '', [], '', False)
         t0 = time.perf_counter()
         try:
-            p = build_protocol(self.workbook, raw, list(tokens))
+            p = self._build(raw, tokens)
         except Exception as e:
             self._log_error('preview', e)
             return GenerateResult('', f'✗ Ошибка: {e}', [], '', False)
@@ -404,7 +443,7 @@ class Controller:
         if not raw.strip():
             return fail('Введите краткую запись')
         try:
-            p = build_protocol(self.workbook, raw, list(tokens))
+            p = self._build(raw, tokens)
         except Exception as e:
             self._log_error('generate', e)
             return fail(f'✗ Ошибка: {e}')
@@ -443,7 +482,7 @@ class Controller:
             changed = (sum(1 for line in difflib.ndiff(p.text.splitlines(), text.splitlines())
                            if line[:1] in '+-') if edited else 0)
             self.track('note_confirm', via=via, edited_lines=changed, length=len(raw),
-                       **(stats or {}))
+                       mode='shell' if self.shell_mode else 'comma', **(stats or {}))
         defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
         status = 'Скопировано в буфер' if copy else 'Протокол пересобран (в буфер не копировался)'
         return GenerateResult(p.text, status, p.warnings, defaults, copy, p.rows)
@@ -457,6 +496,9 @@ class Controller:
         если raw задан — черновика. Слова-токены не подчёркиваются: их врач принял."""
         if self.workbook is None:
             return []
+        if self.shell_mode:
+            text = raw if raw is not None else (self._last_raw if self.last_protocol else '')
+            return self._shell_unknown(text)
         draft = raw is not None
         if not draft and self.last_protocol is None:
             return []

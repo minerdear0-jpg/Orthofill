@@ -41,6 +41,29 @@ class Item:
     words: list[str] = field(default_factory=list)   # доп. слова упоминания
     combine: str | None = None      # группа: 'and' — все упомянутые варианты; None — один (ИЛИ)
     condition: dict | None = None   # пункт: условие (orthofill/logic.py), None — нет
+    cancel: str | None = None       # код дочерней ветки «нет» (отмена пункта, 0.5) — не вариант
+
+
+def is_cancel(it: Item) -> bool:
+    """Ветка «нет» (0.5): вариант с текстом «нет» — отмена родителя в оболочке,
+    не вариант протокола."""
+    return it.level == 3 and it.text.strip().rstrip('.').strip().lower() == 'нет'
+
+
+def link_tree(items: list[Item], by_id: dict[str, Item]) -> None:
+    """Дети по родителю; ветка «нет» — в parent.cancel, не в children (старый
+    разбор и протокол её не видят, пункт без вариантов остаётся пунктом)."""
+    for it in items:
+        it.children = []
+        it.cancel = None
+    for it in items:
+        p = by_id.get(it.parent) if it.parent is not None else None
+        if p is None:
+            continue
+        if is_cancel(it):
+            p.cancel = it.id
+        else:
+            p.children.append(it)
 
 
 @dataclass
@@ -173,10 +196,9 @@ def load_workbook_file(path: str | Path) -> Workbook:
     for it in items:
         if it.level == 3 and it.parent not in by_id:
             it.level, it.parent, it.orphan = 2, it.id[0], True
+    link_tree(items, by_id)
     for it in items:
-        if it.parent in by_id:
-            by_id[it.parent].children.append(it)
-        elif it.parent is not None:
+        if it.parent is not None and it.parent not in by_id:
             problems.append(f'код «{it.id}»: нет раздела «{it.parent}»')
 
     if SETTINGS_SHEET in book.sheetnames:

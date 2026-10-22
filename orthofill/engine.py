@@ -842,13 +842,23 @@ def _key(line: tuple[str, str]) -> tuple[str, str]:
     return line[0], ' '.join(line[1].split())
 
 
+def protocol_for(wb: Workbook, raw: str) -> Protocol:
+    """Протокол записи любого вида: строки-пути оболочки (0.5) — из путей,
+    иначе — разбор записи."""
+    from .shell import SEP
+    if SEP.strip() in raw:
+        from .shellproto import shell_protocol
+        return shell_protocol(wb, raw)
+    return build_protocol(wb, raw)
+
+
 def check_references(wb: Workbook, protocols: list[Protocol] | None = None) -> list[CaseResult]:
     """Сверка по пунктам (кодам и их порядку), не по тексту. Строка эталона без
     кода (своя строка врача) не проверяется; строка с кодом группы и своим
     текстом — «формулировка врача»: подходит любой вариант этой группы."""
     results = []
     for k, case in enumerate(wb.references):
-        p = protocols[k] if protocols is not None else build_protocol(wb, case.raw)
+        p = protocols[k] if protocols is not None else protocol_for(wb, case.raw)
         got = [c for c, _ in p.lines]
         exp, own, free = [], 0, set()
         for code, text in case.lines:

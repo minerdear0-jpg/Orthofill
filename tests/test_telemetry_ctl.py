@@ -165,3 +165,14 @@ def test_perf_hints_and_unknown(ctl, order_xlsx):
     ctl.find_unknown('лигатурная, квакозябра')
     keys = set().union(*(e.keys() for e in _events(ctl) if e['event'] == 'perf'))
     assert 'hints_ms_med' in keys and 'unknown_ms_med' in keys
+
+
+def test_note_confirm_mode(ctl, order_xlsx):
+    ctl.import_xlsx(order_xlsx)
+    ctl.set_diagnostics(True)
+    ctl.generate('лигатурная', via='button')
+    ctl.set_shell_mode(True)
+    from orthofill.shell import format_path
+    ctl.generate(format_path(ctl.workbook, ('4', '4f', '4f1')), via='button')
+    modes = [e['mode'] for e in _events(ctl) if e['event'] == 'note_confirm']
+    assert modes == ['comma', 'shell']

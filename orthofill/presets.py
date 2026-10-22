@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .journal import Journal, _now
-from .workbook import DictEntry, Item, Phrase, ReferenceCase, Workbook, normalize_references
+from .workbook import DictEntry, Item, Phrase, ReferenceCase, Workbook, link_tree, normalize_references
 
 
 @dataclass
@@ -153,9 +153,7 @@ class PresetStore:
                       combine=combine, condition=json.loads(cond) if cond else None)
             items.append(it)
             by_id[code] = it
-        for it in items:
-            if it.parent in by_id:
-                by_id[it.parent].children.append(it)
+        link_tree(items, by_id)
         refs = self._load_references(preset_id)
         dictionary = self._load_dictionary(preset_id)
         pairs = [tuple(p) for p in db.execute(

@@ -95,6 +95,12 @@ def data_dir() -> Path:
     return d
 
 
+def _comma_part(raw: str | None) -> str:
+    """Запись без строк-путей оболочки (0.5): привычки и подсказки режима «через
+    запятую» учатся только на нём (и сравнение режимов в телеметрии честное)."""
+    return '\n'.join(line for line in (raw or '').splitlines() if '›' not in line)
+
+
 class Journal:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
@@ -154,7 +160,7 @@ class Journal:
         for (raw,) in self._db.execute(
                 'SELECT raw FROM entries WHERE preset_id IS ? ORDER BY id DESC LIMIT ?',
                 (preset_id, limit)):
-            for w in words_of(raw or ''):
+            for w in words_of(_comma_part(raw)):
                 out[w] = out.get(w, 0) + 1
         return out
 
@@ -166,8 +172,8 @@ class Journal:
         for (raw,) in self._db.execute(
                 'SELECT raw FROM entries WHERE preset_id IS ? ORDER BY id DESC LIMIT ?',
                 (preset_id, limit)):
-            raw = (raw or '').strip()
-            if not out or out[-1] != raw:
+            raw = _comma_part(raw).strip()
+            if raw and (not out or out[-1] != raw):
                 out.append(raw)
         return out
 

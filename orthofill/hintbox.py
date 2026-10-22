@@ -77,7 +77,8 @@ class HintBox:
         return bool(self.items) or bool(self.phrase) or bool(self.fields)
 
     def _enabled(self) -> bool:
-        return bool(self.app.hints_on.get())
+        # в режиме оболочки (0.5) поле обслуживает ShellBox — подсказки слов не нужны
+        return bool(self.app.hints_on.get()) and not self.app.ctl.shell_mode
 
     def _track(self, event: str, **data):
         try:
