@@ -46,7 +46,7 @@ def test_window_title_has_version_and_build():
     from orthofill import buildinfo
     from orthofill.ui import window_title
     assert window_title() == f"Orthofill 0.2 beta 5 · сборка {buildinfo.build_id()}"
-    assert re.match(r"Orthofill 0\.2 beta 4 · сборка \S+", window_title())
+    assert re.match(r"Orthofill 0\.2 beta 5 · сборка \S+", window_title())
 
 
 def test_diag_events_have_build(tmp_path):
