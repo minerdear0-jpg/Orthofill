@@ -35,7 +35,8 @@ class HintBox:
         text.bind('<KeyRelease>', self._on_key_release, add='+')
         for seq, fn in (('<Tab>', self._tab), ('<Down>', lambda e: self._move(1, e)),
                         ('<Up>', lambda e: self._move(-1, e)), ('<Return>', self._enter),
-                        ('<Escape>', self._escape), ('<Control-space>', self._manual)):
+                        ('<Escape>', self._escape), ('<Control-space>', self._manual),
+                        ('<Right>', self._right)):
             text.bind(seq, fn)
         text.bind('<FocusOut>', lambda e: self.close(), add='+')
         text.bind('<Button-1>', lambda e: self.close(), add='+')
@@ -187,6 +188,14 @@ class HintBox:
         if self.items and self.selected >= 0 and self.accept():
             return 'break'
         self.close()
+        return None
+
+    def _right(self, e):
+        """→ принимает серый хвост (как в браузере и VS Code); иначе — курсор вправо."""
+        if e is not None and e.state & (0x1 | 0x4):
+            return None
+        if self.items and self.tail.cget('text') and self.accept(0 if self.selected < 0 else None):
+            return 'break'
         return None
 
     def _escape(self, e):

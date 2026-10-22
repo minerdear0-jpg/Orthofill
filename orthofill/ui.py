@@ -316,17 +316,24 @@ class App:
             for seq in ('<Control-Return>', '<Control-KP_Enter>'):
                 w.bind(seq, lambda e: (self.generate(), 'break')[1])
         self.root.bind_all('<Control-KeyPress>', self._on_ctrl_key, add='+')
+        # меню правой кнопки во всех полях ввода (и в диалогах, и в редакторе)
+        for cls in ('Text', 'Entry', 'TEntry'):
+            self.root.bind_class(cls, '<Button-3>', self._on_field_menu, add='+')
 
     def _on_ctrl_key(self, e):
-        if e.widget.winfo_toplevel() is not self.root:
-            return None          # окно редактора: Ctrl+O / Ctrl+Shift+C главного окна не действуют
         latin = len(e.keysym) == 1 and e.keysym.isascii()
         key = (_VK if sys.platform == 'win32' else _X11).get(e.keycode)
         shift = bool(e.state & 0x1)
-        if key == 'c' and shift:
+        try:
+            main = e.widget.winfo_toplevel() is self.root
+        except AttributeError:          # служебный виджет Tk без объекта Python
+            main = False
+        # Ctrl+O / Ctrl+Shift+C — команды главного окна; в диалогах и редакторе — нет.
+        # А правка текста в русской раскладке (Ctrl+C/V/X/A/Z) — во всех окнах.
+        if main and key == 'c' and shift:
             self.copy()
             return 'break'
-        if key == 'o':
+        if main and key == 'o':
             self.import_xlsx()
             return 'break'
         if latin or key is None:
@@ -914,16 +921,76 @@ class App:
         code = self._code_at(index)
         return self.open_editor(code) if code else None
 
-    def _on_protocol_menu(self, e):
-        index = self.out_txt.index(f'@{e.x},{e.y}')
+    # ---------- меню правой кнопки в полях ----------
+    def _text_menu(self, w) -> tk.Menu:
+        """Отменить · Вырезать · Копировать · Вставить · Удалить · Выделить всё."""
+        menu = tk.Menu(w, tearoff=0)
+        is_text = isinstance(w, tk.Text)
+        try:
+            readonly = str(w.cget('state')) in ('disabled', 'readonly')
+        except tk.TclError:
+            readonly = False
+        if is_text:
+            has_sel = bool(w.tag_ranges('sel'))
+        else:
+            try:
+                has_sel = bool(w.selection_present())
+            except (AttributeError, tk.TclError):
+                has_sel = False
+
+        def undo():
+            try:
+                w.edit_undo()
+            except tk.TclError:
+                pass
+
+        def select_all():
+            if is_text:
+                w.tag_add('sel', '1.0', 'end-1c')
+            else:
+                w.select_range(0, 'end')
+                w.icursor('end')
+            w.focus_set()
+
+        edit = 'disabled' if readonly else 'normal'
+        menu.add_command(label='Отменить', command=undo,
+                         state=edit if is_text else 'disabled')
+        menu.add_separator()
+        menu.add_command(label='Вырезать', command=lambda: w.event_generate('<<Cut>>'),
+                         state=edit if has_sel else 'disabled')
+        menu.add_command(label='Копировать', command=lambda: w.event_generate('<<Copy>>'),
+                         state='normal' if has_sel else 'disabled')
+        menu.add_command(label='Вставить', command=lambda: w.event_generate('<<Paste>>'),
+                         state=edit)
+        menu.add_command(label='Удалить', command=lambda: w.event_generate('<<Clear>>'),
+                         state=edit if has_sel else 'disabled')
+        menu.add_separator()
+        menu.add_command(label='Выделить всё', command=select_all)
+        return menu
+
+    def _on_field_menu(self, e):
+        w = e.widget
+        if not hasattr(w, 'event_generate'):
+            return None
+        w.focus_set()
+        self._text_menu(w).tk_popup(e.x_root, e.y_root)
+        return 'break'
+
+    def _protocol_menu(self, index: str) -> tk.Menu:
+        """Меню протокола: работа с текстом и «Изменить … в пресете» для строки."""
+        menu = self._text_menu(self.out_txt)
         code = self._code_at(index)
-        if not code:
-            return
-        text = ' '.join(self.ctl.workbook.by_id[code].text.split())
-        menu = tk.Menu(self.root, tearoff=0)
-        menu.add_command(label=f'Изменить «{text[:40]}{"…" if len(text) > 40 else ""}» в пресете…',
-                         command=lambda: self.open_editor(code))
-        menu.tk_popup(e.x_root, e.y_root)
+        if code:
+            text = ' '.join(self.ctl.workbook.by_id[code].text.split())
+            menu.add_separator()
+            menu.add_command(label=f'Изменить «{text[:40]}{"…" if len(text) > 40 else ""}» в пресете…',
+                             command=lambda: self.open_editor(code))
+        return menu
+
+    def _on_protocol_menu(self, e):
+        self.out_txt.focus_set()
+        self._protocol_menu(self.out_txt.index(f'@{e.x},{e.y}')).tk_popup(e.x_root, e.y_root)
+        return 'break'
 
     def after_preset_saved(self, preset_id: int, status: str):
         """Редактор сохранил пресет: статус, и протокол пересобран без копирования."""

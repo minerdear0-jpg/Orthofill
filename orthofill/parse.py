@@ -268,7 +268,7 @@ def parse_dynamics(n):
     return None
 
 def parse_ligature_change(n, st):
-    if re.search(r'(смен|замен)\w*\s+[^.;]*лигатур|лигатур\w*\s+(смен|замен)', n):
+    if re.search(r'(смен|замен)\w*\s+[^.;]*лигатур|лигатур\w*\s+(смен|замен)', _without_system(n)):
         return True
     # «лигатуры на нижней» на самолигирующей — тоже смена лигатур;
     # «система лигатур(ная)» — это тип системы
@@ -276,16 +276,32 @@ def parse_ligature_change(n, st):
         return True
     return st == 'ligature'
 
+# «металлическая (длинная) лигатура» — подвязывание длинной лигатурой, не смена
+# эластических; «короткая металлическая» — свой пункт (подвязывание одного зуба)
+_METAL = r'(?P<short>коротк\w*\s+)?металлическ\w*\s+(?:длинн\w*\s+)?лигатур\w*'
+
+
 def _without_system(n):
-    """Запись без «система лигатур(ная)» — это тип системы, а не лигатуры."""
+    """Запись без «система лигатур(ная)» (тип системы) и без металлических
+    лигатур (подвязывание) — для смены эластических лигатур."""
+    n = re.sub(_METAL, '', n)
     return re.sub(r'систем\w*\s+(?:вестибулярн\w*\s+)?лигатур\w*', '', n)
+
+
+def parse_binding(n):
+    """Подвязывание: «подвяз…» или «металлическая (длинная) лигатура»."""
+    return 'подвяз' in n or any(not m.group('short') for m in re.finditer(_METAL, n))
 
 def parse_ligature_arches(n):
     """Челюсть — только во фрагменте про лигатуры (не «дуга на верху»)."""
     return arches_in(clause(_without_system(n), r'лигатур(?!н)', stops='.;,'))
 
 def parse_binding_arches(n):
-    return arches_in(clause(n, r'подвяз', stops='.;,'))
+    long_metal = next((m.start() for m in re.finditer(_METAL, n) if not m.group('short')), None)
+    start = n.find('подвяз')
+    if start < 0 and long_metal is not None:
+        start = long_metal
+    return arches_in(clause(n[start:], r'.', stops='.;,')) if start >= 0 else None
 
 def parse_wire_adjustments(n):
     out = []
@@ -311,7 +327,7 @@ def extract_facts(raw: str) -> dict:
         'dynamics': parse_dynamics(n),
         'ligature_change': parse_ligature_change(n, st),
         'ligature_arches': parse_ligature_arches(n),
-        'binding': 'подвяз' in n,
+        'binding': parse_binding(n),
         'binding_arches': parse_binding_arches(n),
         'wire_adjustments': parse_wire_adjustments(n),
         'mentions_elastics': _mentions_elastics(n),
