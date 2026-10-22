@@ -207,6 +207,7 @@ class _Ctx:
         self.dictionary_hits: list[str] = []
         # группа → (выбранные варианты, выбрано по записи?) — факты для условий
         self.picked: dict[str, tuple[list[Item], bool]] = {}
+        self.unclear: set[str] = set()      # группа упомянута, но не распознана
 
     def flag(self, code: str, reason: str):
         reasons = self.flags.setdefault(code, [])
@@ -670,6 +671,9 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
         for item in s.children:
             if item.children:
                 chosen[item.id] = _select_or_default(item, ctx)
+    if ctx.f['wire_hint'] and not ctx.f['wires']:    # дуга упомянута, но не распознана
+        ctx.unclear |= {g.id for g in wb.items if g.children and rule_kind(g) == 'wire'
+                        and g.id not in ctx.picked}
     facts = _facts(ctx, said)
     # проход 2: строки по разделам
     lines: list[tuple[str, str]] = []
@@ -710,18 +714,25 @@ def _select_or_default(group: Item, ctx: _Ctx):
 
 def _select_rule_or_default(group: Item, ctx: _Ctx):
     n_def, n_warn = len(ctx.defaults), len(ctx.warnings)
+    n_flag = len(ctx.flags.get(group.id, []))
     ctx.current = group.id
     try:
         sel = _select(group, ctx)
     finally:
         ctx.current = None
+    # факт для условий — только выбор по записи: правило ничего не подставило
+    # (умолчание, «ближайший» вариант, материал/челюсть по умолчанию) и ни в чём
+    # не усомнилось (предупреждение, «проверьте»)
+    record = (len(ctx.defaults) == n_def and len(ctx.warnings) == n_warn
+              and len(ctx.flags.get(group.id, [])) == n_flag
+              and not (rule_kind(group) == 'wire' and ctx.f['wire_no_arch']))
+    if sel is None and len(ctx.warnings) > n_warn:
+        ctx.unclear.add(group.id)
     if sel and rule_kind(group) == 'wire' and ctx.f['wire_no_arch']:
         ctx.flag(group.id, 'челюсть не указана — дуга на обеих')
     if sel and rule_kind(group) is None:
         ctx.flag(group.id, 'выбрано по словам записи — проверьте')
     target = group.default and next((c for c in group.children if c.id == group.default), None)
-    # факт для условий — только выбор по записи (не умолчание правила или пресета)
-    record = len(ctx.defaults) == n_def
     if not target or len(ctx.warnings) > n_warn:
         _pick(ctx, group, sel, record)
         return sel
@@ -737,6 +748,8 @@ def _select_rule_or_default(group: Item, ctx: _Ctx):
 def _pick(ctx: _Ctx, group: Item, sel, record: bool) -> None:
     if sel is not None:
         ctx.picked[group.id] = (sel if isinstance(sel, list) else [sel], record)
+        if sel == []:
+            ctx.picked[group.id] = ([], record)
 
 
 class _Said:
@@ -747,18 +760,33 @@ class _Said:
     def __init__(self, ctx: _Ctx):
         self.ctx, self._memo = ctx, {}
 
-    def __contains__(self, code: str) -> bool:
+    def get(self, code: str) -> bool | None:
+        """Да / нет / неизвестно. Группа: выбор по записи или «упомянута без
+        варианта» — да; правило что-то подставило или не распознало — неизвестно;
+        правило ничего не нашло — нет. Пункта нет в пресете — неизвестно."""
         if code not in self._memo:
             ctx, it = self.ctx, self.ctx.wb.by_id.get(code)
             if code in ctx.picked:
-                self._memo[code] = ctx.picked[code][1]
-            elif it is None or it.children:
-                self._memo[code] = False
+                sel, record = ctx.picked[code]
+                self._memo[code] = True if (record or sel == []) else None
+            elif code in ctx.unclear or it is None:
+                self._memo[code] = None
+            elif it.children:
+                # не выбрана, но названа словами заголовка («смена дуги на верхней» без
+                # размера) — неизвестно; ошибка здесь безопасна: «неизвестно» не выводит
+                stems = _stems(it.text)
+                hits = sum(stem_in(st, ctx.n) for st in stems)
+                named = (stems and hits >= min(2, len(stems))) or \
+                    (it.words and _mention(it.words, ctx.n) is not None)
+                self._memo[code] = None if named else False
             else:
                 self._memo[code] = it.id in ctx.forced_singles or (
                     _best_by_words([it], ctx.n) is not None if it.orphan
                     else _single_mentioned(it, ctx))
         return self._memo[code]
+
+    def __contains__(self, code: str) -> bool:
+        return self.get(code) is True
 
 
 def _facts(ctx: _Ctx, said: _Said) -> Facts:
@@ -770,13 +798,14 @@ def _key(line: tuple[str, str]) -> tuple[str, str]:
     return line[0], ' '.join(line[1].split())
 
 
-def check_references(wb: Workbook) -> list[CaseResult]:
+def check_references(wb: Workbook, protocols: list[Protocol] | None = None) -> list[CaseResult]:
     """Сверка по пунктам (кодам и их порядку), не по тексту. Строка эталона без
     кода (своя строка врача) не проверяется; строка с кодом группы и своим
     текстом — «формулировка врача»: подходит любой вариант этой группы."""
     results = []
-    for case in wb.references:
-        got = [c for c, _ in build_protocol(wb, case.raw).lines]
+    for k, case in enumerate(wb.references):
+        p = protocols[k] if protocols is not None else build_protocol(wb, case.raw)
+        got = [c for c, _ in p.lines]
         exp, own, free = [], 0, set()
         for code, text in case.lines:
             if not code:

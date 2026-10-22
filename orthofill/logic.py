@@ -22,7 +22,8 @@ Node = dict
 @dataclass
 class Facts:
     known: dict[str, set[str]] = field(default_factory=dict)   # группа → варианты из записи
-    mentioned: set[str] = field(default_factory=set)            # упомянутые группы и пункты
+    # упомянутые группы и пункты: множество (да/нет) или что-то с .get(код) → да/нет/None
+    mentioned: object = field(default_factory=set)
 
 
 # ---------- вычисление ----------
@@ -37,7 +38,8 @@ def evaluate(node: Node | None, facts: Facts) -> bool | None:
         else:
             res = True if True in vals else None if None in vals else False
     elif node.get('mentioned'):
-        res = node['field'] in facts.mentioned
+        get = getattr(facts.mentioned, 'get', None)
+        res = get(node['field']) if get else node['field'] in facts.mentioned
     else:
         known = facts.known.get(node['field'])
         res = None if known is None else node['is'] in known

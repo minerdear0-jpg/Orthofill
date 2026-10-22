@@ -259,7 +259,11 @@ class EditorWindow:
                         ('finding',) if it.id in flagged else ())
         if sel and tree.exists(sel[0]):
             self._focus(sel[0])
-        results = self.draft.check()
+        # протоколы эталонов — один раз на правку: и сверка, и счётчик у пункта
+        from .engine import build_protocol, check_references
+        prots = [build_protocol(wb, r.raw) for r in wb.references]
+        results = check_references(wb, prots)
+        self._ref_out = [{c for c, _ in p.lines} for p in prots]
         ok = sum(r.ok for r in results)
         self.results = results
         self.status_lbl.configure(
@@ -588,8 +592,7 @@ class EditorWindow:
                       justify='left').pack(anchor='w')
 
         # самопроверка: где пункт выводится сейчас и где его ждут эталоны
-        from .engine import build_protocol
-        got = sum(code in {c for c, _ in build_protocol(wb, r.raw).lines} for r in wb.references)
+        got = sum(code in out for out in getattr(self, '_ref_out', []))
         want = sum(any(c == code for c, _ in r.lines) for r in wb.references)
         self.refs_lbl = ttk.Label(p, text=f'по эталонам: выводится в {got}, ожидается в {want}',
                                   font=app.f_small, foreground=MUTED if got == want else WARN_TEXT)
@@ -731,7 +734,11 @@ class EditorWindow:
         if first:
             f = self.draft.wb.by_id.get(first['field'])
             what = f'«{_ws(f.text).rstrip(":")}»' if f else first['field']
-            self.cond_note.configure(text=f'{what} не назван в записи — строка не выводится.')
+            if first.get('not') and first.get('mentioned'):
+                note = f'Строка выводится, пока {what} не упомянут в записи.'
+            else:
+                note = f'{what} не назван в записи — строка не выводится.'
+            self.cond_note.configure(text=note)
         elif need:
             self.cond_note.configure(text='Условия нет — строка не выводится. Добавьте строку.')
         self.cond_note.pack(anchor='w', pady=(4, 0))

@@ -210,3 +210,11 @@ def test_delete_keeps_broken_condition_and_drops_pair(d):
     assert d.referrers('4e') == ['4h1'] and d.referrers('4e1') == []
     d.delete('4e')
     assert d.wb.not_together == [] and d.wb.by_id['4h1'].condition['all'][0]['field'] == '4e'
+
+
+def test_rename_orphan_keeps_guessed_condition(d):
+    from orthofill.engine import build_protocol
+    d.set_text('4h1', 'Контроль положения дуги.')
+    assert d.wb.by_id['4h1'].condition == {'all': [{'field': '2b', 'is': '2b2'}]}
+    assert d.wb.by_id['4h1'].when == 'condition'
+    assert '4h1' in [c for c, _ in build_protocol(d.wb, 'лигатурная').lines]

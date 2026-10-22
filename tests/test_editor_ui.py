@@ -387,3 +387,22 @@ def test_props_scroll_in_narrow(app):
     ed.select('4h1')
     ed.top.update()
     assert ed.props_canvas.bbox('all')[3] > ed.props_canvas.winfo_height()
+
+
+def test_selecting_items_does_not_rebuild_references(app, monkeypatch):
+    import orthofill.engine as engine
+    ed = app.open_editor('4a')
+    calls = []
+    orig = engine.build_protocol
+    monkeypatch.setattr(engine, 'build_protocol', lambda *a, **k: calls.append(1) or orig(*a, **k))
+    for code in ('4d1', '4h1', '4a', '3f'):
+        ed.select(code)
+    assert not calls
+
+
+def test_caption_for_not_mentioned_row(app):
+    ed = app.open_editor('4a')
+    ed.draft.set_condition('4a', {'all': [{'field': '4e', 'mentioned': True, 'not': True}]})
+    ed.refresh()
+    ed.select('4a')
+    assert 'не выводится' not in ed.cond_note['text'] and 'пока' in ed.cond_note['text']

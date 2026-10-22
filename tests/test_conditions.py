@@ -117,3 +117,32 @@ def test_references_unchanged(wb):
     """Эталоны order.xlsx совпадают и после логики полей (файлы врача — в журнале выпуска)."""
     from orthofill.engine import check_references
     assert all(r.ok for r in check_references(wb))
+
+
+# ---------- итоговая проверка: факты только из записи ----------
+def _cond(wb, code, node, when='always'):
+    wb.by_id[code].when, wb.by_id[code].condition = when, node
+
+
+@pytest.mark.parametrize('raw, node', [
+    ('система лигатурная, смена дуги на верхней 014', {'all': [{'field': '4b', 'mentioned': True, 'not': True}]}),
+    ('система лигатурная, смена дуги на верхней', {'all': [{'field': '4b', 'mentioned': True, 'not': True}]}),
+    ('система лигатурная, эластики назначены', {'all': [{'field': '4f', 'mentioned': True, 'not': True}]}),
+    ('система лигатурная, замена лигатур', {'all': [{'field': '4d', 'mentioned': True, 'not': True}]}),
+    ('система лигатурная, явка', {'all': [{'field': '5d', 'is': '5d2'}]}),
+    ('система лигатурная, явка через 5 недель', {'all': [{'field': '5d', 'is': '5d2'}]}),
+    ('система лигатурная, смена дуги 014', {'all': [{'field': '4c', 'is': '4c1'}]}),
+    ('система лигатурная', {'all': [{'field': '4p', 'mentioned': True, 'not': True}]}),   # 4p нет
+])
+def test_guess_is_not_a_fact(wb, raw, node):
+    _cond(wb, '4j', node)
+    assert '4j' not in codes(build_protocol(wb, raw))
+
+
+def test_real_mention_still_works(wb):
+    _cond(wb, '4j', {'all': [{'field': '4b', 'mentioned': True}]})
+    assert '4j' in codes(build_protocol(wb, 'система лигатурная, смена дуги на верхней 014 нити'))
+    _cond(wb, '4j', {'all': [{'field': '4f', 'mentioned': True, 'not': True}]})
+    assert '4j' in codes(build_protocol(wb, 'система лигатурная'))     # эластики не названы — да
+    _cond(wb, '4j', {'all': [{'field': '5d', 'is': '5d2'}]})
+    assert '4j' in codes(build_protocol(wb, 'система лигатурная, явка через 4 недели'))

@@ -159,6 +159,11 @@ class Draft:
             it.method = engine._guess_kind(it) or 'words'
         if it.level == 2 and not it.children and not it.orphan and it.when is None:
             it.when = engine._effective_when(self.wb)[code]
+        if it.orphan and it.when is None:       # угаданное по названию условие — закрепить
+            cond = engine.guess_condition(it, self.wb)
+            if cond and it.condition is None:
+                it.condition = cond
+            it.when = 'condition' if cond else 'mentioned'
         old = it.text
         it.text = text
         _retext(self.wb.references, self.wb.dictionary, code, old, text)
