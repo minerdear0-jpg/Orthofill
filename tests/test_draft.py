@@ -175,3 +175,38 @@ def test_deleted_code_is_not_reused(d):
     assert d.add('4d', None, 'Новый вариант', 3) == '4d4'
     r = d.check()[0]
     assert not r.ok and ('4a', 'осмотр.') in r.missing
+
+
+# ---------- 0.2 beta 5: логика ----------
+def test_code_change_remaps_logic(d):
+    d.wb.by_id['4h1'].condition = {'all': [{'field': '2b', 'is': '2b2'}]}
+    d.wb.not_together = [('4h1', '4h2')]
+    d.swap('2b1', '2b2')
+    d.set_code('4h2', '4h3')
+    assert d.wb.by_id['4h1'].condition == {'all': [{'field': '2b', 'is': '2b1'}]}
+    assert d.wb.not_together == [('4h1', '4h3')]
+    d.undo()
+    d.undo()
+    assert d.wb.not_together == [('4h1', '4h2')]
+    assert d.wb.by_id['4h1'].condition == {'all': [{'field': '2b', 'is': '2b2'}]}
+
+
+def test_logic_commands_undo(d):
+    d.set_condition('4a', {'all': [{'field': '4j', 'mentioned': True}]})
+    d.set_combine('4f', 'and')
+    d.add_pair('4h2', '4h1')
+    d.add_pair('4h1', '4h2')                     # повтор — без второй пары
+    assert d.wb.not_together == [('4h1', '4h2')] and d.wb.by_id['4f'].combine == 'and'
+    d.remove_pair('4h2', '4h1')
+    assert d.wb.not_together == []
+    for _ in range(4):
+        d.undo()
+    assert d.wb.by_id['4a'].condition is None and d.wb.by_id['4f'].combine is None
+
+
+def test_delete_keeps_broken_condition_and_drops_pair(d):
+    d.set_condition('4h1', {'all': [{'field': '4e', 'mentioned': True}]})
+    d.add_pair('4h1', '4e1')
+    assert d.referrers('4e') == ['4h1'] and d.referrers('4e1') == []
+    d.delete('4e')
+    assert d.wb.not_together == [] and d.wb.by_id['4h1'].condition['all'][0]['field'] == '4e'

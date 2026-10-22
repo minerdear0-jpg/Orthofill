@@ -141,6 +141,11 @@ def apply_map(wb: Workbook, m: CodeMap) -> None:
         case.lines[:] = [(m.get(c, c), t) for c, t in case.lines]
     for e in wb.dictionary:
         e.code = m.get(e.code, e.code)
+    from .logic import remap
+    for it in wb.items:
+        it.condition = remap(it.condition, m)
+    wb.not_together[:] = sorted({tuple(sorted((m.get(a, a), m.get(b, b))))
+                                 for a, b in wb.not_together})
 
 
 def rebuild(wb: Workbook) -> None:

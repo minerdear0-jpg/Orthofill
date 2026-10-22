@@ -124,6 +124,8 @@ class Draft:
             if it.default in codes:
                 it.default = None
         self.wb.dictionary[:] = _drop_words(self.wb.dictionary, codes, texts)
+        self.wb.not_together[:] = [p for p in self.wb.not_together
+                                   if p[0] not in codes and p[1] not in codes]
         rebuild(self.wb)
         self.ops.append(('del_item', codes, texts))
 
@@ -176,6 +178,34 @@ class Draft:
             return err
         self._codes(rename_map(self.wb, code, new))
         return None
+
+    # ---------- логика (0.2 beta 5) ----------
+    def set_condition(self, code: str, node: dict | None) -> None:
+        self._begin()
+        self.wb.by_id[code].condition = node
+
+    def set_combine(self, code: str, value: str | None) -> None:
+        self._begin()
+        self.wb.by_id[code].combine = value
+
+    def add_pair(self, a: str, b: str) -> None:
+        pair = tuple(sorted((a, b)))
+        if a == b or pair in self.wb.not_together:
+            return
+        self._begin()
+        self.wb.not_together[:] = sorted(self.wb.not_together + [pair])
+
+    def remove_pair(self, a: str, b: str) -> None:
+        pair = tuple(sorted((a, b)))
+        if pair in self.wb.not_together:
+            self._begin()
+            self.wb.not_together.remove(pair)
+
+    def referrers(self, code: str) -> list[str]:
+        """Пункты, чьи условия ссылаются на код (или пункты внутри него)."""
+        from .logic import refs
+        inner = {code} | {it.id for it in self.wb.items if inside(it.id, code)}
+        return [it.id for it in self.wb.items if it.condition and refs(it.condition) & inner]
 
     def swap(self, a: str, b: str) -> None:
         self._codes(swap_map(a, b, self.wb))

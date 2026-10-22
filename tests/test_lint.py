@@ -43,3 +43,18 @@ def test_details_show_findings(ctl, order_xlsx_with):
     ctl.import_xlsx(wb.path)
     assert any('одинаковые строки' in d for d in ctl.details)
     assert not any('одинаковый текст у' in d for d in ctl.details)
+
+
+def test_lint_logic(order_xlsx_with):
+    wb = order_xlsx_with()
+    wb.by_id['4a'].when, wb.by_id['4a'].condition = 'condition', {'all': [{'field': '4p', 'mentioned': True}]}
+    wb.by_id['4j'].when, wb.by_id['4j'].condition = 'condition', {'all': [{'field': '2b', 'is': '2b1', 'not': True}]}
+    wb.by_id['5a'].when = 'condition'
+    wb.not_together = [('4d1', '4d2'), ('4h1', '4h2')]
+    wb.by_id['3f'].combine = 'and'
+    wb.by_id['4f'].combine = 'and'
+    found = {(f.kind, f.code, f.level) for f in lint(wb)}
+    assert {('bad_ref', '4a', 'error'), ('from_nothing', '4j', 'error'),
+            ('no_condition', '5a', 'warning'), ('pair_in_group', '4d1,4d2', 'error'),
+            ('and_unsupported', '3f', 'warning')} <= found
+    assert not {f for f in found if f[1] in ('4f', '4h1,4h2')}

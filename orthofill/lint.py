@@ -82,5 +82,44 @@ def lint(wb: Workbook) -> list[Finding]:
         if it.level == 2 and not it.orphan and not it.children and it.method:
             out.append(Finding(it.id, 'empty_group', 'warning', f'«{_title(it)}»: группа без вариантов'))
 
+    out += _logic(wb)
+
     order = {it.id: k for k, it in enumerate(wb.items)}
     return sorted(out, key=lambda f: order.get(f.code.split(',')[0], 0))
+
+
+def _logic(wb: Workbook) -> list[Finding]:
+    """Находки логики полей (0.2 beta 5)."""
+    from .engine import effective_condition, rule_kind
+    from .logic import has_positive, refs
+    out: list[Finding] = []
+    for it in wb.items:
+        cond = it.condition
+        if cond:
+            gone = sorted(refs(cond) - set(wb.by_id))
+            if gone:
+                out.append(Finding(it.id, 'bad_ref', 'error',
+                                   f'условие «{_title(it)}» ссылается на удалённый {", ".join(gone)}'))
+        if it.when == 'condition':
+            cond = effective_condition(it, wb)
+            if cond is None:
+                out.append(Finding(it.id, 'no_condition', 'warning',
+                                   f'«{_title(it)}»: «по условию», но условия нет — '
+                                   f'строка не выводится никогда'))
+            elif not has_positive(cond):
+                out.append(Finding(it.id, 'from_nothing', 'error',
+                                   f'«{_title(it)}»: в условии только «НЕ» — строка выводилась '
+                                   f'бы из ничего; добавьте строку без «НЕ»'))
+        if it.combine == 'and' and it.children and \
+                rule_kind(it) not in (None, 'elastics', 'adjust'):
+            out.append(Finding(it.id, 'and_unsupported', 'warning',
+                               f'«{_title(it)}»: сочетание «И» не действует для правила '
+                               f'«{rule_kind(it)}» — выводится один вариант'))
+    for a, b in wb.not_together:
+        x, y = wb.by_id.get(a), wb.by_id.get(b)
+        if x and y and x.level == y.level == 3 and not x.orphan and x.parent == y.parent \
+                and wb.by_id[x.parent].combine != 'and':
+            out.append(Finding(f'{a},{b}', 'pair_in_group', 'error',
+                               f'«не вместе» {a} и {b}: варианты одной группы и так не бывают '
+                               f'вместе — пара лишняя'))
+    return out
