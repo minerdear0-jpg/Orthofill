@@ -103,3 +103,65 @@ def test_drawer_shows_live_protocol(sh):
     sh._live_show()
     _key(sh, 'F2')
     assert 'Перепел' in sh.out_txt.get('1.0', 'end-1c')
+
+
+# ---------- Task 2: Ctrl+Enter — проверка в две колонки ----------
+def _note(sh, *paths):
+    sh.raw_txt.delete('1.0', 'end')
+    sh.raw_txt.insert('1.0', '\n'.join(format_path(sh.ctl.workbook, p) for p in paths))
+    sh._live_show()
+    sh.root.update()
+
+
+def test_confirm_opens_review(sh):
+    clip = []
+    sh.ctl.clipboard = clip.append
+    _note(sh, ('4', '4f', '4f1'))
+    sh.generate('ctrl_enter')
+    sh.root.update()
+    assert clip and 'Перепел' in clip[-1]
+    assert sh.shell_view == 'review' and sh.out_panel.winfo_manager() == 'grid'
+    assert abs(_w(sh.in_panel) / _w(sh.body) - 0.55) < 0.07
+
+
+def test_typing_closes_review(sh):
+    _note(sh, ('4', '4f', '4f1'))
+    sh.generate('ctrl_enter')
+    sh.raw_txt.insert('end', '\nл')
+    sh.root.update()
+    assert sh.shell_view == 'input'
+
+
+def test_escape_closes_review(sh):
+    _note(sh, ('4', '4f', '4f1'))
+    sh.generate('ctrl_enter')
+    _key(sh, 'Escape')
+    assert sh.shell_view == 'input'
+
+
+def test_review_recopy_edit(sh):
+    clip = []
+    sh.ctl.clipboard = clip.append
+    _note(sh, ('4', '4f', '4f1'))
+    sh.generate('ctrl_enter')
+    sh.out_txt.insert('end', '\nСвоё после проверки')
+    sh.generate('ctrl_enter')
+    assert 'Своё после проверки' in clip[-1] and sh.shell_view == 'review'
+
+
+def test_review_from_drawer(sh):
+    _note(sh, ('4', '4f', '4f1'))
+    _key(sh, 'F2')
+    sh.generate('ctrl_enter')
+    assert sh.shell_view == 'review' and sh.out_panel.winfo_manager() == 'grid'
+
+
+def test_layout_events(sh, monkeypatch):
+    seen = []
+    monkeypatch.setattr(sh.ctl, 'track', lambda e, **d: seen.append((e, d)))
+    _key(sh, 'F2')
+    _key(sh, 'F2')
+    _note(sh, ('4', '4f', '4f1'))
+    sh.generate('ctrl_enter')
+    names = [d.get('name') for e, d in seen if e == 'ui']
+    assert names[:2] == ['drawer_open', 'drawer_close'] and 'review_open' in names

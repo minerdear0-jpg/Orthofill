@@ -415,9 +415,11 @@ class App:
     def set_shell_view(self, view: str):
         if view == self.shell_view:
             return
-        self.shell_view = view
-        events = {'drawer': 'drawer_open', 'review': 'review_open'}
-        self.ctl.track('ui', name=events.get(view, 'drawer_close' if view == 'input' else view))
+        prev, self.shell_view = self.shell_view, view
+        name = {'drawer': 'drawer_open', 'review': 'review_open'}.get(view)
+        if name is None:
+            name = 'review_close' if prev == 'review' else 'drawer_close'
+        self.ctl.track('ui', name=name)
         if self.ctl.shell_mode:
             self._layout_shell()
 
@@ -1004,6 +1006,8 @@ class App:
         if self.raw_txt.edit_modified():
             self.raw_txt.edit_modified(False)
             if self.ctl.shell_mode:
+                if self.shell_view == 'review':
+                    self.set_shell_view('input')    # пишут дальше — снова всё окно под запись
                 raw = self.raw_txt.get('1.0', 'end-1c')
                 lines = {l for l in raw.splitlines() if l.strip()}
                 # новый пациент: запись стёрта или не осталось ни строки подтверждённой
@@ -1108,6 +1112,7 @@ class App:
         if r.copied and self.ctl.shell_mode:
             self._confirmed_lines = {l for l in self.raw_txt.get('1.0', 'end-1c').splitlines()
                                      if l.strip()}
+            self.set_shell_view('review')       # сравнить: запись | протокол рядом
         if r.copied and edited:
             self.ctl.confirm_shown(current)         # правка подтверждена — это и есть протокол
         elif r.copied:
