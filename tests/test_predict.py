@@ -96,3 +96,9 @@ def test_skeleton_next_flag(wb):
 def test_skeleton_without_history(wb):
     blocks = skeleton_blocks(wb, {'2', '2b', '2b2'}, [('2', '2b', '2b2')], PathStats())
     assert blocks == [('2c', True)]
+
+
+def test_skeleton_next_skips_present(wb):
+    """«Следующий» — первый кандидат, которого ещё нет в протоколе (умолчания — есть)."""
+    blocks = skeleton_blocks(wb, {'1', '1a', '2', '2b', '2b2'}, [], PathStats())
+    assert blocks and blocks[0][1] is True and blocks[0][0] != '1a'

@@ -68,8 +68,9 @@ def skeleton_blocks(wb: Workbook, protocol_codes: set[str], note_paths: list[Pat
     """Скелет холста (0.5 b3): пункты разделов, которых ещё нет в протоколе и которые
     врач обычно пишет, плюс первый кандидат предсказания («следующий», True).
     По порядку файла."""
-    preds = predict(wb, note_paths, stats, limit=1)
-    nxt = preds[0].path[1] if preds and len(preds[0].path) == 2 else None
+    preds = predict(wb, note_paths, stats, limit=10 ** 6)
+    nxt = next((p.path[1] for p in preds
+                if len(p.path) == 2 and p.path[1] not in protocol_codes), None)
     out = []
     for sec, unit in _units(wb):
         if unit in protocol_codes:

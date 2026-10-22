@@ -252,6 +252,19 @@ class App:
         self.out_txt.bind('<KeyRelease>', self._unmark_edited, add='+')
         self.out_txt.bind('<Button-3>', self._on_protocol_menu)
         self.out_txt.tag_configure('added', background='#e3eef7')
+        # холст (0.5 b3, режим оболочки): свой текст, скелет, подсветка строки оболочки
+        self.out_txt.tag_configure('own', background='#fff8e5', lmargin1=6, lmargin2=6,
+                                   lmargincolor='#b88a00')
+        self.out_txt.tag_configure('skeleton', background='#e8e7e2')
+        self.out_txt.tag_configure('skeleton_next', background='#dbe7f3')
+        self.out_txt.tag_configure('hl', background='#e3eef7')
+        self.out_txt.tag_raise('hl')
+        self._canvas_lines = []
+        self._canvas_shown: list[str] = []
+        self._canvas_info: dict[str, tuple[str, str]] = {}   # тег строки → (код, исходный текст)
+        self._canvas_warn: list[str] = []
+        for seq in ('<KeyRelease>', '<ButtonRelease-1>'):
+            self.raw_txt.bind(seq, lambda e: self._canvas_highlight(), add='+')
 
         # Строка статуса
         st = ttk.Frame(r, padding=(12, 4, 12, 8))
@@ -497,6 +510,10 @@ class App:
 
     def _show_protocol(self, rows):
         """Текст протокола с тегами; прежние теги снимаются полностью."""
+        if self.ctl.shell_mode and self.ctl.workbook is not None:
+            self._show_canvas(rows)
+            return
+        self._canvas_lines, self._canvas_shown, self._canvas_warn = [], [], []
         t = self.out_txt
         t.delete('1.0', 'end')
         for tag in ('section', 'first', 'check'):
@@ -512,6 +529,95 @@ class App:
             t.insert('end', row.text + ('\n' if i < len(rows) - 1 else ''), tuple(tags))
         t.edit_reset()
         t.edit_modified(False)
+
+    # ---------- холст (0.5 b3) ----------
+    def _show_canvas(self, rows):
+        """Протокол как холст: собранные строки + правки врача + скелет."""
+        from .canvas import compose
+        from .predict import skeleton_blocks
+        wb = self.ctl.workbook
+        order = {it.id: i for i, it in enumerate(wb.items)}
+        section_of = {}
+        for it in wb.items:
+            c = it
+            while c.parent and c.parent in wb.by_id:
+                c = wb.by_id[c.parent]
+            section_of[it.id] = c.id
+        codes = {c for r in rows for c in r.codes}
+        end = int(self.raw_txt.index('end-1c').split('.')[0]) + 1   # от конца записи
+        skel = skeleton_blocks(wb, codes, self.shell_box._note_paths(end), self.ctl.path_stats())
+        lines, self._canvas_warn = compose(rows, self.ctl.canvas_edits, skel, order, section_of)
+        t = self.out_txt
+        t.delete('1.0', 'end')
+        for tag in t.tag_names():
+            if tag.startswith('cv') or tag in ('section', 'first', 'check', 'row', 'own',
+                                               'skeleton', 'skeleton_next', 'hl'):
+                t.tag_remove(tag, '1.0', 'end')
+        self._canvas_info = {}
+        for i, line in enumerate(lines):
+            tags = [line.kind]
+            r = line.row
+            if r is not None and r.section:
+                tags.append('section')
+                if i == 0:
+                    tags.append('first')
+            if r is not None and r.check:
+                tags.append('check')
+            if line.kind == 'row' or line.replaces:
+                tag = f'cv{i}'
+                tags.append(tag)
+                self._canvas_info[tag] = (line.code, r.text if r else line.text)
+            # перевод строки — без тегов: набор в конце строки не «прилипает» к ней
+            t.insert('end', line.text, tuple(tags))
+            if i < len(lines) - 1:
+                t.insert('end', '\n')
+        self._canvas_lines = lines
+        self._canvas_shown = [l.code for l in lines if l.kind == 'row' or l.replaces]
+        t.edit_reset()
+        t.edit_modified(False)
+        self._canvas_highlight()
+
+    def _canvas_capture(self):
+        """Правки врача на холсте — по тому, что сейчас в поле протокола."""
+        if not (self.ctl.shell_mode and self._canvas_lines):
+            return
+        from .canvas import PLACEHOLDER, capture
+        t = self.out_txt
+        last = int(t.index('end-1c').split('.')[0])
+        field = []
+        for n in range(1, last + 1):
+            text = t.get(f'{n}.0', f'{n}.end')
+            tags = t.tag_names(f'{n}.0')
+            cv = next((g for g in tags if g.startswith('cv') and g in self._canvas_info), None)
+            if cv is not None:
+                code, original = self._canvas_info[cv]
+                field.append((text, code, original))
+            elif 'skeleton' in tags or 'skeleton_next' in tags:
+                field.append((text, None, PLACEHOLDER))
+            else:
+                field.append((text, None, None))
+        self.ctl.canvas_edits = capture(field, self._canvas_shown, self.ctl.canvas_edits.removed)
+
+    def _canvas_text(self) -> str:
+        from .canvas import confirm_text
+        return confirm_text(self._canvas_lines)
+
+    def _canvas_highlight(self):
+        """Строка оболочки под курсором — её место в протоколе подсвечено."""
+        t = self.out_txt
+        t.tag_remove('hl', '1.0', 'end')
+        if not (self.ctl.shell_mode and self._canvas_lines):
+            return
+        from .shell import parse_line
+        n = int(self.raw_txt.index('insert').split('.')[0])
+        path = parse_line(self.ctl.workbook, self.raw_txt.get(f'{n}.0', f'{n}.end'))
+        if not path:
+            return
+        for tag, (code, _) in self._canvas_info.items():
+            r = t.tag_ranges(tag)
+            line = next((l for l in self._canvas_lines if l.code == code and l.row), None)
+            if r and line is not None and path[-1] in line.row.codes:
+                t.tag_add('hl', r[0], r[1])
 
     def _unmark_edited(self, e):
         """Врач поправил помеченную строку — пометка снимается."""
@@ -818,7 +924,13 @@ class App:
         """Черновик протокола после паузы в наборе (без буфера и журнала)."""
         self._live_job = None
         if not self.raw_txt.get('1.0', 'end-1c').strip():     # запись стёрта — новый пациент
+            from .canvas import Edits
+            self.ctl.canvas_edits = Edits()
             self._unfreeze()
+            self._live_show()
+            return
+        if self.ctl.shell_mode:         # холст: правки врача — слой поверх, протокол живой
+            self._canvas_capture()
             self._live_show()
             return
         if self.live_frozen or self.ctl.needs_confirm_regenerate(self.out_txt.get('1.0', 'end-1c')):
@@ -848,7 +960,7 @@ class App:
         r = self.ctl.preview(raw, tokens)
         self._last_draft = r
         self._show_protocol(r.rows)
-        self._status(r.status, r.warnings, r.defaults_line, rows=r.rows)
+        self._status(r.status, r.warnings + self._canvas_warn, r.defaults_line, rows=r.rows)
         if raw.strip():
             self._unknown_job = self.root.after(
                 self.unknown_delay, lambda: self._show_unknown(self.ctl.find_unknown(raw, tokens)))
@@ -875,7 +987,14 @@ class App:
         self.hint_box.close(reason='confirm')
         pending = self._live_job is not None
         self._cancel_live()
-        current = self.out_txt.get('1.0', 'end-1c')
+        if self.ctl.shell_mode and self._canvas_lines:
+            # холст: правки врача — в модель, текст — из модели (скелет не копируется)
+            self._canvas_capture()
+            self._live_show()
+            pending = False
+            current = self._canvas_text()
+        else:
+            current = self.out_txt.get('1.0', 'end-1c')
         edited = self.ctl.needs_confirm_regenerate(current)
         stale = edited and (pending or self.live_frozen)   # дописано после правки протокола
         r = self.ctl.generate(self.raw_txt.get('1.0', 'end-1c'), tokens=self.tokens(),
