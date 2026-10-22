@@ -226,9 +226,12 @@ class HintBox:
             self.close()
 
     def _on_resize(self, e):
+        """Окно изменило размер (в т.ч. от живого протокола) — подсказку не
+        закрывать, а поставить под курсор заново, когда раскладка уляжется."""
         if e.widget is not self.app.root:
             return
         size = (e.width, e.height)
         if size != self._size:
             self._size = size
-            self.close()
+            if self.items:
+                self.app.root.after_idle(lambda: self.items and self._show())

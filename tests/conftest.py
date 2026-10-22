@@ -72,6 +72,9 @@ def _make_app(tmp_path, *paths):
     root = tk.Tk()
     ctl = Controller(Journal(tmp_path / "j.db"), clipboard=lambda t: None)
     a = App(root, ctl)
+    # живой протокол — только в своих тестах (test_live_ui задаёт задержку сам):
+    # иначе черновик через 300 мс перезаписывает статус, который проверяет тест
+    a.live_delay = a.unknown_delay = 600_000
     ctl.clipboard = a._clipboard
     for p in paths:
         ctl.import_xlsx(p)

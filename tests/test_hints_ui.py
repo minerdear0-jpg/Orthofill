@@ -154,14 +154,20 @@ def test_accept_rechecks_prefix(app):
     assert _raw(app).startswith('лиг') and 'торк' not in _raw(app)
 
 
-def test_width_only_resize_closes(app):
+def test_width_only_resize_moves_list(app):
+    """Окно изменило размер (живой протокол, статус) — список не исчезает и не
+    остаётся в старом месте: встаёт под курсором заново."""
     app.ctl.learn('торк', '4g3')
     app.ctl.generate('лигатурная, торцевание')
     _type(app, 'тор')
     assert app.hint_box.list_shown
     app.root.geometry(f'{app.root.winfo_width() + 40}x{app.root.winfo_height()}')
     app.root.update()
-    assert not app.hint_box.visible
+    app.root.update()
+    hb, t = app.hint_box, app.raw_txt
+    assert hb.visible and hb.list_shown
+    x0 = t.winfo_rootx() - app.root.winfo_rootx()
+    assert x0 <= hb.frame.winfo_x() <= x0 + t.winfo_width()
 
 
 def test_invisible_hint_is_shown_as_list(app):
