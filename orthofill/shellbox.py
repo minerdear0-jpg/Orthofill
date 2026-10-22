@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import re
 import tkinter as tk
+from tkinter import font as tkfont
 
+from .colorize import line_spans, section_color
 from .distinct import diff_spans, distinct_labels
 from .predict import predict, rank
 from .shell import SEP, Path, children_of, format_path, is_leaf, parse_line, resolve, split_line
@@ -45,6 +47,20 @@ class ShellBox:
         self._stat = {'tabs': 0, 'questions': 0, 'typed': 0, 'bad': False}
         text.tag_configure('shell_bad', foreground='#b42318', underline=True)
         text.tag_configure('shell_ok', foreground='#1b1b1a')
+        # 0.5 b7: раскраска — раздел своим цветом, группа полужирная, лист с зелёной чертой
+        bold = tkfont.Font(font=app.f_text)
+        bold.configure(weight='bold')
+        text.tag_configure('sh_grp', font=bold)
+        text.tag_configure('sh_leaf', foreground='#1b1b1a', underline=True)
+        try:                                        # Tk 8.7+: цвет черты
+            text.tag_configure('sh_leaf', underlinefg='#1f7a3f')
+        except tk.TclError:
+            pass
+        text.tag_configure('sh_sep', foreground='#b9b8b1')
+        text.tag_configure('sh_typed', background=_DIFF_BG)
+        text.tag_configure('sh_cur', background=_SEL_BG)
+        text.tag_raise('shell_bad')
+        self._sec_tags: set[str] = set()
         bg = text.cget('background')
         self.tail = tk.Label(text, text='', fg='#8a95a1', bg=bg, font=app.f_small, bd=0, padx=4)
         self.frame = tk.Frame(app.root, bg='#ffffff', highlightthickness=1,
@@ -99,6 +115,7 @@ class ShellBox:
         self.tail.place_forget()
         self.frame.place_forget()
         self._hide_preview()
+        self.text.tag_remove('sh_cur', '1.0', 'end')
 
     # ---------- просмотр (0.5 b7) ----------
     def _build_preview(self):
@@ -309,7 +326,8 @@ class ShellBox:
     def _mark_ok(self):
         """Готовые строки (путь до конца) — отмечены."""
         t = self.text
-        t.tag_remove('shell_ok', '1.0', 'end')
+        for tag in ('shell_ok', 'sh_grp', 'sh_leaf', 'sh_sep', 'sh_typed', *self._sec_tags):
+            t.tag_remove(tag, '1.0', 'end')
         if not self.on():
             return
         last = int(t.index('end-1c').split('.')[0])
@@ -318,6 +336,31 @@ class ShellBox:
             path = parse_line(self.wb, line) if SEP.strip() in line else None
             if path and is_leaf(self.wb, path):
                 t.tag_add('shell_ok', f'{n}.0', f'{n}.end')
+            for s, e, kind in line_spans(self.wb, line):
+                t.tag_add(self._color_tag(kind), f'{n}.{s}', f'{n}.{e}')
+
+    def _color_tag(self, kind: str) -> str:
+        if not kind.startswith('sec:'):
+            return f'sh_{kind}'
+        k = int(kind[4:])
+        tag = f'sh_sec{k}'
+        if tag not in self._sec_tags:
+            self.text.tag_configure(tag, foreground=section_color(k))
+            self.text.tag_lower(tag, 'sh_cur')
+            self._sec_tags.add(tag)
+        return tag
+
+    def _mark_current_level(self):
+        """Уровень, который сейчас выбирают (последний перед курсором), — подсвечен."""
+        t = self.text
+        t.tag_remove('sh_cur', '1.0', 'end')
+        n, line = self._line()
+        col = int(t.index('insert').split('.')[1])
+        levels = [(s, e) for s, e, k in line_spans(self.wb, line)
+                  if (k == 'grp' or k.startswith('sec:')) and e <= col]
+        if levels:
+            s, e = levels[-1]
+            t.tag_add('sh_cur', f'{n}.{s}', f'{n}.{e}')
 
     # ---------- показ ----------
     def _show_ghost(self):
@@ -393,6 +436,7 @@ class ShellBox:
         f.place(x=rx + min(box[0], max(0, room - width)), y=top, width=width)
         f.lift()
         self.list_shown = True
+        self._mark_current_level()
         if selected >= 0:
             self._show_preview()
         else:
