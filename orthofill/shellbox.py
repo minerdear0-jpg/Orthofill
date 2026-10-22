@@ -50,9 +50,14 @@ class ShellBox:
                         ('<Down>', lambda e: self._move(1)), ('<KeyPress>', self._keypress),
                         ('<KeyRelease>', self._keyrelease),
                         ('<Control-Right>', self._ctrl_right),
+                        ('<Shift-Tab>', lambda e: self._shift_tab()),
                         ('<Left>', lambda e: self._arrow(-1, e)),
                         ('<Right>', lambda e: self._arrow(1, e))):
             text.bind(seq, fn, add='+')
+        try:                                        # X11: Shift+Tab приходит как ISO_Left_Tab
+            text.bind('<ISO_Left_Tab>', lambda e: self._shift_tab(), add='+')
+        except tk.TclError:
+            pass
         text.bind('<FocusOut>', lambda e: self.close(), add='+')
         text.bind('<ButtonRelease-1>', lambda e: self.on() and self.update(), add='+')
 
@@ -136,7 +141,7 @@ class ShellBox:
             self.ghost = format_path(self.wb, r.common if not unique else r.leaves[0])
             self._show_ghost()
         if not unique and len(r.choices) > 1:
-            self._show_list(self._rank(r.choices))
+            self._show_list(self._rank(r.choices), 0)     # карусель: первый выбран, Tab — дальше
 
     # ---------- предсказание (0.5 b2) ----------
     def _rank(self, paths):
@@ -237,17 +242,42 @@ class ShellBox:
         self.tail.configure(text=f'→ {self.ghost}')
         self.tail.place(x=box[0] + 4, y=box[1], bordermode='outside')
 
+    def _cycle(self, step: int) -> bool:
+        """Карусель (как Tab в fish): следующий вариант по кругу — без пересчёта дерева,
+        только выделение (зажатый Tab — десятки нажатий в секунду)."""
+        if not (self.list_shown and self.choices):
+            return False
+        n = min(len(self.choices), len(self._rows))
+        old = self.selected
+        self.selected = (self.selected + step) % n if self.selected >= 0 else (0 if step > 0 else n - 1)
+        for i in (old, self.selected):
+            if 0 <= i < len(self._rows):
+                sel = i == self.selected
+                row = self._rows[i]
+                bg = _SEL_BG if sel else '#ffffff'
+                row.configure(bg=bg, highlightbackground=_BORDER if sel else '#ffffff')
+                for w in row.winfo_children():
+                    w.configure(bg=bg)
+        return True
+
+    def _shift_tab(self):
+        if not self.on():
+            return None
+        return 'break' if self._cycle(-1) else None
+
     def _show_list(self, choices: list[Path], selected: int = -1):
         self.choices, self.selected = choices, selected
         f, t, app = self.frame, self.text, self.app
         for w in f.winfo_children():
             w.destroy()
+        self._rows = []
         for i, path in enumerate(choices[:40]):
             sel = i == selected
             star = '★ ' if path in self._stars else ''
             row = tk.Frame(f, bg=_SEL_BG if sel else '#ffffff', highlightthickness=1,
                            highlightbackground=_BORDER if sel else '#ffffff')
             row.pack(fill='x', padx=2, pady=(2 if i == 0 else 0, 0))
+            self._rows.append(row)
             bg = row.cget('bg')
             node = self.wb.by_id[path[-1]]
             tk.Label(row, text=star + ' '.join(node.text.split())[:90], font=app.f_text, bg=bg,
@@ -257,7 +287,7 @@ class ShellBox:
                      bg=bg).pack(side='right', padx=(8, 6))
             for w in (row, *row.winfo_children()):
                 w.bind('<Button-1>', lambda e, k=i: self._click(k))
-        tk.Label(f, text='↑↓ — выбрать · Tab/Enter — принять · Esc — закрыть', font=app.f_small,
+        tk.Label(f, text='Tab — следующий · Shift+Tab — назад · Enter — принять · Esc — закрыть', font=app.f_small,
                  fg='#8a95a1', bg='#ffffff', anchor='w').pack(fill='x', padx=8, pady=(2, 3))
         box = t.bbox('insert') or (0, 0, 0, 16)
         f.update_idletasks()
@@ -347,12 +377,16 @@ class ShellBox:
         if typed.strip():
             r = resolve(self.wb, done, typed, self.app.ctl.shell_synonyms())
             ch = self._rank(r.choices) if len(r.leaves) != 1 else [r.leaves[0]]
+            if ch:
+                self._show_list(ch, 0)
+                self._list_line = line
+            return bool(ch)
         else:
             if done and is_leaf(self.wb, done):
                 return False
             ch = self._rank([done + (c.id,) for c in children_of(self.wb, done[-1] if done else None)])
         if ch:
-            self._show_list(ch, 0 if typed.strip() == '' else -1)
+            self._show_list(ch, 0)
             self._list_line = line
         return bool(ch)
 
@@ -361,14 +395,21 @@ class ShellBox:
         if not self.on() or (e is not None and e.state & (0x1 | 0x4)):
             return None
         self._stat['tabs'] += 1
-        if self._replace and self.list_shown and self.selected >= 0:
-            return 'break' if self._replace_level(self.choices[self.selected]) else None
-        if self.list_shown and self.selected >= 0:
-            return 'break' if self._accept(self.choices[self.selected]) else None
         n, line, done, typed, _ = self._state()
-        self._fresh_prediction(n, line)
-        if not line.strip() and self.prediction is not None:
-            return 'break' if self._take_prediction(None) else None
+        if self.list_shown and self.choices:         # Tab листает, Enter подтверждает
+            if self._list_line is None and done is not None and typed.strip():
+                # список открылся сам при наборе: первый Tab — дополнить общее начало
+                # (как в fish), дальше — листать
+                r = resolve(self.wb, done, typed, self.app.ctl.shell_synonyms())
+                if r.leaves and len(r.common) > len(done):
+                    self._accept(r.common, r.rest)
+                    return 'break'
+                self._list_line = line
+            self._cycle(1)
+            return 'break'
+        if not line.strip():                          # пустая строка — карусель кандидатов
+            self._branches()
+            return 'break'
         if done is None:
             return 'break'
         if typed.strip():
@@ -378,7 +419,7 @@ class ShellBox:
             elif r.leaves and len(r.common) > len(done):
                 self._accept(r.common, r.rest)          # неиспользованные слова — дальше в строке
             elif r.leaves:
-                self._show_list(self._rank(r.choices))
+                self._show_list(self._rank(r.choices), 0)
                 self._list_line = line
                 self._track('ambiguous', count=len(r.choices))
             return 'break'
@@ -397,6 +438,9 @@ class ShellBox:
             return 'break'
         n, line, done, typed, _ = self._state()
         if not line.strip():
+            self._fresh_prediction(n, line)
+            if self.prediction is not None:     # Enter — подтвердить предсказание
+                return 'break' if self._take_prediction(None) else None
             self.close()                    # пустая строка — обычный перенос; подсказка —
             self.tail.place_forget()        # на новую строку, когда перенос случится
             self.app.root.after_idle(self.update)
@@ -524,6 +568,7 @@ class ShellBox:
         sel = next(i for i, p in enumerate(choices) if p[-1] == codes[k])
         self._show_list(choices, sel)
         self._replace = (n, k)
+        self._list_line = line          # открыт явно (остановкой) — Tab только листает
 
     def _replace_level(self, new: Path) -> bool:
         """Заменить уровень; уровни ниже — остаются, если такой же текст есть

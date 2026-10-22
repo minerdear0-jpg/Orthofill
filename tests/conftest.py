@@ -96,6 +96,18 @@ def _make_app(tmp_path, *paths):
     return a
 
 
+def _destroy(a):
+    """Закрыть окно и сразу собрать мусор в главном потоке: иначе переменные Tk
+    закрытых окон добивает сборщик мусора из фонового потока (телеметрия) —
+    Tcl из чужого потока падает («Illegal instruction»)."""
+    import gc
+    try:
+        a.root.destroy()
+    except Exception:
+        pass
+    gc.collect()
+
+
 @pytest.fixture
 def app(tmp_path, order_xlsx):
     """Окно на настоящем Tk: пресеты «order» и «консультация» (текущий)."""
@@ -103,7 +115,7 @@ def app(tmp_path, order_xlsx):
     shutil.copy(order_xlsx, other)
     a = _make_app(tmp_path, order_xlsx, other)
     yield a
-    a.root.destroy()
+    _destroy(a)
 
 
 @pytest.fixture
@@ -113,7 +125,7 @@ def app_with_p(tmp_path, order_xlsx_with):
                          ('4p2', 'на верхней челюсти.'))
     a = _make_app(tmp_path, wb.path)
     yield a
-    a.root.destroy()
+    _destroy(a)
 
 
 @pytest.fixture(autouse=True)

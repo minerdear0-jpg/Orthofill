@@ -115,10 +115,11 @@ def test_backspace_undoes_expand(sh):
 
 
 def test_tab_on_empty_line(sh):
-    """0.5 b2: Tab на пустой строке принимает предсказание (без истории — первое по файлу)."""
+    """0.5 b3: Tab на пустой строке — карусель кандидатов (первый — предсказание), текст не меняется."""
     sh.shell_box.update()
     _key(sh, 'Tab')
-    assert _raw(sh) == format_path(_wb(sh), ('1', '1a'))
+    sb = sh.shell_box
+    assert _raw(sh) == '' and sb.list_shown and sb.choices[sb.selected] == ('1', '1a')
 
 
 def test_hints_off_in_shell(sh):
@@ -358,7 +359,7 @@ def test_tab_accepts_prediction_group(sh):
     _history(sh, [('2', '2b', '2b2'), ('2', '2c', '2c3')],
              [('2', '2b', '2b2'), ('2', '2c', '2c3'), ('4', '4f', '4f1')])   # разные записи
     _finish_line(sh, ('2', '2b', '2b2'))
-    _key(sh, 'Tab')
+    _key(sh, 'Return')                                   # 0.5 b3: Enter — принять предсказание
     assert _raw(sh).split('\n')[1] == format_path(_wb(sh), ('2', '2c')) + ' › '
     sb = sh.shell_box
     assert sb.list_shown and sb.choices[sb.selected][-1] == '2c3'
@@ -394,7 +395,10 @@ def test_typing_dismisses_prediction(sh):
     assert _raw(sh).split('\n')[1] == 'д'
 
 
-def test_enter_ignores_prediction(sh):
+def test_enter_without_prediction_is_newline(sh, monkeypatch):
+    """0.5 b3: Enter на пустой строке принимает предсказание; нет его — обычный перенос."""
+    import orthofill.shellbox as sbm
+    monkeypatch.setattr(sbm, 'predict', lambda *a, **k: [])
     _finish_line(sh, ('2', '2b', '2b2'))
     _key(sh, 'Return')
     assert _raw(sh).split('\n')[1:] == ['', '']
@@ -413,7 +417,7 @@ def test_predict_events(sh, monkeypatch):
     monkeypatch.setattr(sh.ctl, 'track', lambda e, **d: seen.append((e, d)))
     _finish_line(sh, ('2', '2b', '2b2'))       # первую строку врач набрал сам — «ignored»
     seen.clear()
-    _key(sh, 'Tab')
+    _key(sh, 'Return')
     outcomes = [d['outcome'] for e, d in seen if e == 'shell' and d.get('action') == 'predict']
     assert outcomes == ['accepted']
     sh.raw_txt.delete('1.0', 'end')
@@ -454,10 +458,9 @@ def test_arrow_up_refreshes_prediction(sh):
 
 def test_enter_moves_ghost(sh):
     _finish_line(sh, ('2', '2b', '2b2'))
-    _key(sh, 'Return')
     sh.root.update()
     sb = sh.shell_box
-    assert sb._pred_line == 3
+    assert sb._pred_line == 2 and sb.prediction is not None      # подсказка — на новой строке
 
 
 def test_question_pick_prediction_logged_accepted(sh, monkeypatch):
@@ -465,7 +468,7 @@ def test_question_pick_prediction_logged_accepted(sh, monkeypatch):
     _finish_line(sh, ('2', '2b', '2b2'))
     monkeypatch.setattr(sh.ctl, 'track', lambda e, **d: seen.append((e, d)))
     _key(sh, 'KeyPress', keysym='question')
-    _key(sh, 'Tab')
+    _key(sh, 'Return')
     out = [d['outcome'] for e, d in seen if e == 'shell' and d.get('action') == 'predict']
     assert out == ['accepted']
 
@@ -485,7 +488,7 @@ def test_ignored_logged_once(sh, monkeypatch):
 def test_group_from_question_list_opens_branches(sh):
     _finish_line(sh, ('2', '2b', '2b2'))
     _key(sh, 'KeyPress', keysym='question')
-    _key(sh, 'Tab')                                     # первый — группа «Этап»
+    _key(sh, 'Return')                                  # первый — группа «Этап»
     sb = sh.shell_box
     assert sb.list_shown and sb.choices[0][:2] == ('2', '2c')
 
@@ -498,3 +501,98 @@ def test_siblings_ranked(sh):
     _siblings(sh)
     sb = sh.shell_box
     assert sb.choices[0][-1] == '4b18' and sb.choices[sb.selected][-1] == '4b5'
+
+
+# ---------- 0.5 b3: Tab — карусель, Enter — подтверждение ----------
+def _at_group(sh, path):
+    _type(sh, format_path(_wb(sh), path) + ' › ')
+
+
+def test_tab_cycles_carousel(sh):
+    _at_group(sh, ('4', '4f'))
+    _key(sh, 'Tab')
+    sb = sh.shell_box
+    assert sb.list_shown and sb.choices[sb.selected][-1] == '4f1'
+    before = _raw(sh)
+    _key(sh, 'Tab')
+    _key(sh, 'Tab')
+    assert sb.choices[sb.selected][-1] == '4f3' and _raw(sh) == before
+    for _ in range(len(sb.choices) - 2):
+        _key(sh, 'Tab')
+    assert sb.choices[sb.selected][-1] == '4f1'                # по кругу
+
+
+def test_shift_tab_back(sh):
+    _at_group(sh, ('4', '4f'))
+    _key(sh, 'Tab')
+    sh.raw_txt.event_generate('<Shift-Tab>', when='now')
+    sh.root.update()
+    sb = sh.shell_box
+    assert sb.selected == len(sb.choices) - 1
+
+
+def test_enter_confirms_leaf(sh):
+    _at_group(sh, ('4', '4f'))
+    _key(sh, 'Tab')
+    _key(sh, 'Tab')
+    _key(sh, 'Return')
+    assert _raw(sh).split('\n')[0] == format_path(_wb(sh), ('4', '4f', '4f2'))
+    assert sh.raw_txt.index('insert') == '2.0'
+
+
+def test_enter_on_group_opens_branches_carousel(sh):
+    _finish_line(sh, ('2', '2b', '2b2'))
+    _key(sh, 'Return')
+    sb = sh.shell_box
+    assert sb.list_shown and sb.selected == 0 and sb.choices[0][:2] == ('2', '2c')
+
+
+def test_one_key_fill(sh):
+    """Без истории: Enter, Enter — строка по предсказанию готова (только Enter)."""
+    sh.shell_box.update()
+    _key(sh, 'Return')                 # пустая строка → путь до предсказанного
+    _key(sh, 'Return')                 # выбранный вариант → строка готова
+    from orthofill.shell import parse_line, is_leaf
+    first = _raw(sh).split('\n')[0]
+    path = parse_line(_wb(sh), first)
+    assert path and is_leaf(_wb(sh), path) and _raw(sh).endswith('\n')
+
+
+def test_typing_narrows_carousel(sh):
+    _at_group(sh, ('4', '4b'))
+    _type(sh, '16')
+    sb = sh.shell_box
+    assert sb.list_shown and sb.selected == 0
+    _key(sh, 'Tab')
+    assert sb.selected == 1
+
+
+def test_tab_unique_expands(sh):
+    _type(sh, 'лигатурная')
+    _key(sh, 'Tab')
+    assert _raw(sh) == format_path(_wb(sh), ('2', '2b', '2b2'))
+
+
+def test_held_tab_fast(sh, monkeypatch):
+    import time
+    import orthofill.shellbox as sbm
+    _at_group(sh, ('4', '4b'))
+    _key(sh, 'Tab')
+    calls = []
+    real = sbm.resolve
+    monkeypatch.setattr(sbm, 'resolve', lambda *a, **k: calls.append(1) or real(*a, **k))
+    t0 = time.perf_counter()
+    for _ in range(60):
+        sh.shell_box._tab(None)
+    sh.root.update()
+    assert time.perf_counter() - t0 < 1.0 and not calls
+
+
+def test_siblings_carousel(sh):
+    _line_at(sh, ('4', '4f', '4f1'))
+    _key(sh, 'Left')
+    _siblings(sh)
+    _key(sh, 'Tab')
+    _key(sh, 'Return')
+    from orthofill.shell import parse_line
+    assert parse_line(_wb(sh), _raw(sh).split('\n')[0]) == ('4', '4f', '4f2')

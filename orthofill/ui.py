@@ -1505,6 +1505,19 @@ def _preset_about(ctl: Controller) -> str:
     return f'{wb.name} (из {wb.source or "—"}{when})'
 
 
+def main_thread_gc(root: tk.Tk, every_ms: int = 10_000) -> None:
+    """Сборка мусора — только в главном потоке, по таймеру окна. Автоматическую
+    сборку может запустить любой поток (телеметрия), и тогда переменные Tk закрытых
+    окон уничтожались бы из чужого потока — Tcl этого не терпит."""
+    import gc
+    gc.disable()
+
+    def tick():
+        gc.collect()
+        root.after(every_ms, tick)
+    root.after(every_ms, tick)
+
+
 def run() -> None:
     _set_dpi_aware()
     root = tk.Tk()
@@ -1523,6 +1536,7 @@ def run() -> None:
     app.ctl.clipboard = app._clipboard
     root.protocol('WM_DELETE_WINDOW', app.close)
     root.after_idle(app._session_start)
+    main_thread_gc(root)
 
     def on_error(exc, val, tb):   # в exe без консоли иначе ошибку никто не увидит
         import traceback
