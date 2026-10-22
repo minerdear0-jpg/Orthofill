@@ -857,6 +857,18 @@ class App:
         txt.insert('1.0', '\n'.join(self.ctl.details) or 'Замечаний нет.')
         txt.configure(state='disabled')
 
+    def open_editor(self, select: str | None = None):
+        """Редактор пресета — одно окно на программу."""
+        from .editor import EditorWindow
+        ed = getattr(self, '_editor', None)
+        if ed is not None and ed.top.winfo_exists():
+            ed.top.deiconify()
+            ed.top.lift()
+            ed.select(select)
+            return ed
+        self._editor = EditorWindow(self, select)
+        return self._editor
+
     def about(self) -> AboutDialog:
         self.ctl.mark_whats_new_seen()
         self.news_lbl.pack_forget()

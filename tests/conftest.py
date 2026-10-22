@@ -62,3 +62,38 @@ def ctl(tmp_path, clip):
     from orthofill.controller import Controller
     from orthofill.journal import Journal
     return Controller(Journal(tmp_path / "j.db"), clip.append)
+
+
+def _make_app(tmp_path, *paths):
+    import tkinter as tk
+    from orthofill.controller import Controller
+    from orthofill.journal import Journal
+    from orthofill.ui import App
+    root = tk.Tk()
+    ctl = Controller(Journal(tmp_path / "j.db"), clipboard=lambda t: None)
+    a = App(root, ctl)
+    ctl.clipboard = a._clipboard
+    for p in paths:
+        ctl.import_xlsx(p)
+    a._show_file_status()
+    return a
+
+
+@pytest.fixture
+def app(tmp_path, order_xlsx):
+    """Окно на настоящем Tk: пресеты «order» и «консультация» (текущий)."""
+    other = tmp_path / "консультация.xlsx"
+    shutil.copy(order_xlsx, other)
+    a = _make_app(tmp_path, order_xlsx, other)
+    yield a
+    a.root.destroy()
+
+
+@pytest.fixture
+def app_with_p(tmp_path, order_xlsx_with):
+    """Окно с пресетом, где в группе 4p челюсти перепутаны (как у врача)."""
+    wb = order_xlsx_with(('4p', 'Эластическая цепочка'), ('4p1', 'на нижней челюсти.'),
+                         ('4p2', 'на верхней челюсти.'))
+    a = _make_app(tmp_path, wb.path)
+    yield a
+    a.root.destroy()
