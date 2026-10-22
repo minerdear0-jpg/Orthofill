@@ -44,17 +44,50 @@ def make_cert(ip: str, out: Path, days: int = 3650) -> None:
         _write_private(key, tmp_key.read_text())
 
 
+def _cert_ip(cert: Path) -> str:
+    r = subprocess.run(['openssl', 'x509', '-in', str(cert), '-noout', '-ext', 'subjectAltName'],
+                       capture_output=True, text=True)
+    for part in r.stdout.replace(',', '\n').splitlines():
+        part = part.strip()
+        if part.startswith('IP Address:'):
+            return part.split(':', 1)[1].strip()
+    return ''
+
+
+def _check_existing(out: Path, ip: str, port: int | None) -> int:
+    """Ключи уже есть: печатает их порт. Другой IP или порт — отказ: программы
+    клиники доверяют этому сертификату и шлют на этот порт."""
+    cfg = json.loads((out / 'config.json').read_text(encoding='utf-8'))
+    old_port = int(cfg.get('port', 8443))
+    old_ip = cfg.get('ip') or _cert_ip(out / 'cert.pem')
+    if old_ip != ip:
+        print(f'Сертификат выдан на {old_ip}, а не на {ip}. Смена IP: mkconfig.py --force '
+              f'и новый telemetry.json на всех компьютерах.', file=sys.stderr)
+        return 1
+    if port is not None and port != old_port:
+        print(f'Приёмник настроен на порт {old_port}, а не {port}. Смена порта: mkconfig.py '
+              f'--force и новый telemetry.json на всех компьютерах.', file=sys.stderr)
+        return 1
+    print(old_port)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--ip', required=True, help='IP сервера, как его видят компьютеры клиники')
-    ap.add_argument('--port', type=int, default=8443)
+    ap.add_argument('--port', type=int, default=None, help='по умолчанию 8443')
     ap.add_argument('--out', required=True, type=Path)
     ap.add_argument('--db', type=Path, help='база событий (по умолчанию — в --out)')
     ap.add_argument('--doctor', default='', help='прозвище врача в telemetry.json (необязательно)')
     ap.add_argument('--force', action='store_true', help='перезаписать ключи и сертификат')
+    ap.add_argument('--existing', action='store_true',
+                    help='повторная установка: напечатать прежний порт; другой IP/порт — отказ')
     a = ap.parse_args(argv)
     ipaddress.ip_address(a.ip)                    # только IP: домена нет
     out = a.out
+    if a.existing:
+        return _check_existing(out, a.ip, a.port)
+    a.port = a.port or 8443
     out.mkdir(parents=True, exist_ok=True)
     if (out / 'config.json').exists() and not a.force:
         print(f'{out / "config.json"} уже есть — ключи не трогаю (--force — заменить).',
@@ -63,7 +96,7 @@ def main(argv=None) -> int:
     make_cert(a.ip, out)
     key = secrets.token_urlsafe(32)
     password = secrets.token_urlsafe(24)
-    cfg = {'db': str(a.db or out / 'events.db'), 'keys': [key], 'admin_password': password,
+    cfg = {'ip': a.ip, 'db': str(a.db or out / 'events.db'), 'keys': [key], 'admin_password': password,
            'retention_days': 180, 'host': '0.0.0.0', 'port': a.port,
            'cert': str(out / 'cert.pem'), 'key': str(out / 'key.pem')}
     _write_private(out / 'config.json', json.dumps(cfg, ensure_ascii=False, indent=2))

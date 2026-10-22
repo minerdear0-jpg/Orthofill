@@ -93,3 +93,14 @@ def test_mkconfig_cert_has_ip_san(made):
     finally:
         loop.call_soon_threadsafe(loop.stop)
         th.join(5)
+
+
+def test_existing_port_and_ip_check(made, capsys):
+    """Повторный install.sh: порт — из прежних настроек; другой IP или порт — отказ."""
+    out, port = made
+    capsys.readouterr()
+    assert mkconfig.main(['--out', str(out), '--existing', '--ip', '127.0.0.1']) == 0
+    assert capsys.readouterr().out.strip() == str(port)
+    assert mkconfig.main(['--out', str(out), '--existing', '--ip', '10.0.0.9']) == 1
+    assert mkconfig.main(['--out', str(out), '--existing', '--ip', '127.0.0.1',
+                          '--port', str(port + 1)]) == 1

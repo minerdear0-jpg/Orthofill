@@ -176,3 +176,28 @@ def test_bad_config_reported(tmp_path):
     c['key'] = 'ключ'
     (tmp_path / 'telemetry.json').write_text(json.dumps(c), encoding='utf-8')
     assert load_config(tmp_path, tmp_path / 'x', None) is None and 'латиницей' in load_config.error
+
+
+def test_segment_capped_by_bytes(tmp_path):
+    dead = f'https://127.0.0.1:{free_port()}'
+    t = Telemetry(_cfg(dead), tmp_path)
+    t.max_segment_bytes = 1000
+    for i in range(20):
+        t.put({'event': 'error', 'traceback': 'x' * 200, 'n': i})
+    t.close()
+    segs = list(tmp_path.glob('seg-*.jsonl'))
+    assert len(segs) >= 4 and all(p.stat().st_size <= 1000 + 400 for p in segs)
+
+
+def test_rejected_segment_does_not_block(rx, tmp_path):
+    rx.status = 413
+    t = _fast(Telemetry(_cfg(rx.url), tmp_path))
+    t.start()
+    t.put({'event': 'huge'})
+    assert _wait(lambda: list((tmp_path / 'overflow').glob('*.jsonl')))
+    assert 'не принята' in t.status().error
+    rx.status = 200
+    t.put({'event': 'next'})
+    assert _wait(lambda: any(e['event'] == 'next' for e in rx.events))
+    assert t.status().overflowed == 1
+    t.close()

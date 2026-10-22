@@ -5,7 +5,7 @@
 set -euo pipefail
 
 IP="${1:-}"
-PORT="8443"
+PORT=""
 FIREWALL=1
 shift || true
 for a in "$@"; do
@@ -48,8 +48,12 @@ install -d -m 750 -o "$USER_" -g "$USER_" "$DATA"
 
 echo "== Ключи и сертификат"
 if [[ -f "$ETC/config.json" ]]; then
-    echo "   $ETC/config.json уже есть — ключи не меняю"
+    # повторная установка: порт — прежний; другой IP или порт — отказ (программы
+    # клиники доверяют прежнему сертификату и шлют на прежний порт)
+    PORT="$(python3 "$APP/mkconfig.py" --existing --ip "$IP" ${PORT:+--port "$PORT"} --out "$ETC")"
+    echo "   $ETC/config.json уже есть — ключи не меняю (порт $PORT)"
 else
+    PORT="${PORT:-8443}"
     install -d -m 750 "$ETC"
     python3 "$APP/mkconfig.py" --ip "$IP" --port "$PORT" --out "$ETC" --db "$DATA/events.db"
 fi

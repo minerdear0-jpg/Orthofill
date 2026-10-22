@@ -14,15 +14,19 @@ _SURN = r'[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?'
 _INIT = r'[А-ЯЁ]\.(?:\s?[А-ЯЁ]\.)?'
 _INITIALS = re.compile(rf'(?<![\w.]){_SURN}\s+{_INIT}(?!\w)|(?<![\w.]){_INIT}\s?{_SURN}(?!\w)')
 # то же в нижнем регистре (нормализованная копия записи): «петров и.и.»
-_SURN_LOW = r'[а-яё]{2,}(?:ов|ев|ёв|ин|ын|ова|ева|ёва|ина|ына|ский|ская|цкий|цкая|ко|ук|юк|енко)'
+# фамилия во всех падежах: петров/петрова/петрову/петровой/петровым/петровых, -ский/-ского…
+_SURN_LOW = (r'[а-яё]{2,}(?:(?:ов|ев|ёв|ин|ын)(?:а|у|ым|ой|ою|е|ых|ыми|им)?'
+             r'|(?:ск|цк)(?:ий|ая|ого|ой|ому|им|ую|ом|их|ими)|енко|ко|ук|юк)')
+# одна или две буквы-инициала; «т.к.», «т.е.», «т.д.», «т.п.», «и т.д.» — не инициалы
 _INITIALS_LOW = re.compile(
-    rf'(?<![\w.]){_SURN_LOW}\s+(?!(?:т\.\s?[кедп]\.|и\.\s?т\.))[а-яё]\.\s?[а-яё]\.(?!\w)')
+    rf'(?<![\w.]){_SURN_LOW}\s+(?!(?:т\.\s?[кедп]\.|и\.\s?т\.|т\.\s))'
+    rf'[а-яё]\.(?:\s?[а-яё]\.)?(?!\w)')
 _WORD = re.compile(r'[А-Яа-яЁё]+(?:-[А-Яа-яЁё]+)?')
 # отчество во всех падежах: Иванович(а/у/ем/е), Ивановна (ы/е/у/ой), Ильич, Ильинична
 _PATRONYMIC = re.compile(
     r'[а-яё]{3,}(?:(?:ович|евич)(?:а|у|ем|е)?|(?:овн|евн|ичн)(?:а|ы|е|у|ой)|ьич(?:а|у|ом|е)?)')
 # фамилия маленькими буквами — только рядом с именем/отчеством
-_SURNAME_LIKE = re.compile(r'[а-яё]{2,}(?:ов|ев|ёв|ин|ын|ова|ева|ёва|ина|ына|ский|ская|цкий|цкая|ко|ук|юк|енко)')
+_SURNAME_LIKE = re.compile(_SURN_LOW)
 # имена, совпадающие с обычными словами, — только с заглавной буквы
 _AMBIGUOUS = {'лев', 'вера', 'надежда', 'любовь', 'роза', 'лилия', 'слава', 'лада',
               'мила', 'майя', 'тома', 'ян', 'яна', 'марк', 'роман', 'влад', 'дина',
@@ -133,6 +137,10 @@ def _scrub(text: str, keep: frozenset[str], known: frozenset[str] = frozenset()
     return text, count, found
 
 
+# служебные поля события — не текст врача (прозвище врача «Маша» — не ФИО пациента)
+META = frozenset({'id', 'ts', 'event', 'install', 'doctor', 'version', 'build'})
+
+
 def scrub_event(ev: dict, keep: frozenset[str] = frozenset()) -> dict:
     """Копия события: все строки (и во вложенных списках/словарях) без ФИО;
     ``scrubbed`` — число замен, если они были."""
@@ -150,7 +158,7 @@ def scrub_event(ev: dict, keep: frozenset[str] = frozenset()) -> dict:
                 collect(x)
             if len(v) > 1 and all(isinstance(x, str) for x in v):
                 collect(' '.join(v))       # список слов записи — по порядку, как фраза
-    collect(ev)
+    collect({k: v for k, v in ev.items() if k not in META})
     frozen = frozenset(known)
 
     def walk(v):
@@ -165,7 +173,7 @@ def scrub_event(ev: dict, keep: frozenset[str] = frozenset()) -> dict:
             return [walk(x) for x in v]
         return v
 
-    out = walk(ev)
+    out = {k: (v if k in META else walk(v)) for k, v in ev.items()}
     if total:
         out['scrubbed'] = out.get('scrubbed', 0) + total if isinstance(out.get('scrubbed'), int) else total
     return out

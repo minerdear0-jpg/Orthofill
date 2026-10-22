@@ -93,6 +93,7 @@ class Telemetry:
     flush_every = 5.0       # с — как часто отправлять
     flush_count = 100       # столько событий в памяти — отправить сразу
     batch = 500             # событий в сегменте (= в одном запросе)
+    max_segment_bytes = 512 * 1024   # и не больше этого (сервер принимает до 1 МБ)
     max_bytes = 50 * 1024 * 1024
     timeout = 10.0
     backoff_min = 5.0
@@ -116,6 +117,7 @@ class Telemetry:
         self._next_try = 0.0
         self._open: Path | None = None
         self._open_lines = 0
+        self._open_bytes = 0
         self._spooled = 0
         self._overflowed = 0
         self._recover()
@@ -150,7 +152,7 @@ class Telemetry:
                 self._open.rename(self._open.with_suffix(''))
             except OSError:
                 pass
-            self._open, self._open_lines = None, 0
+            self._open, self._open_lines, self._open_bytes = None, 0, 0
 
     def _drain(self) -> None:
         """Память → файл-очередь (с вырезанием ФИО)."""
@@ -173,12 +175,13 @@ class Telemetry:
                     with self._open.open('a', encoding='utf-8') as f:
                         f.write(line + '\n')
                     self._open_lines += 1
+                    self._open_bytes += len(line.encode('utf-8')) + 1
                     self._spooled += 1
                     wrote = True
                 except OSError:
                     self._q.put(rec)           # диск недоступен — останется в памяти
                     break
-                if self._open_lines >= self.batch:
+                if self._open_lines >= self.batch or self._open_bytes >= self.max_segment_bytes:
                     self._roll()
             if wrote:
                 self._trim()
@@ -223,6 +226,9 @@ class Telemetry:
             with urllib.request.urlopen(req, timeout=self.timeout, context=self._ctx) as r:
                 r.read(4096)
         except urllib.error.HTTPError as e:
+            if e.code in (400, 413):              # сервер эту пачку не примет никогда —
+                self._reject(seg, len(raw), e.code)   # в запас, очередь идёт дальше
+                return True
             if e.code in (401, 403):
                 self._fail(ERR_KEY)
             elif e.code == 429:
@@ -253,6 +259,18 @@ class Telemetry:
         self._error, self._delay = '', 0.0
         self._last_ok = datetime.now().isoformat(timespec='seconds')
         return True
+
+    def _reject(self, seg: Path, n: int, code: int) -> None:
+        with self._lock:
+            try:
+                over = self.dir / 'overflow'
+                over.mkdir(exist_ok=True)
+                seg.rename(over / seg.name)
+            except OSError:
+                pass
+            self._spooled -= n
+            self._overflowed += n
+        self._error = f'пачка не принята ({code}) — сохранена в overflow'
 
     def _fail(self, error: str, wait: float | None = None) -> None:
         self._error = error

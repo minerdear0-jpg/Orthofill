@@ -70,3 +70,20 @@ def test_selftest_fails_without_names(monkeypatch):
     from orthofill.ui import selftest
     monkeypatch.setattr(sc, 'NAMES', frozenset())
     assert selftest() == 1
+
+
+def test_meta_fields_not_scrubbed():
+    """Финальная проверка: прозвище врача «Маша» — не ФИО пациента."""
+    out = scrub_event({'doctor': 'Маша', 'install': 'abc', 'event': 'ui', 'raw': 'Маша'})
+    assert out['doctor'] == 'Маша' and out['raw'] == '‹ФИО›'
+
+
+@pytest.mark.parametrize('raw, out', [
+    ('у петровой м.м. отклеился', 'у ‹ФИО› отклеился'),
+    ('петрову и. жалоб нет', '‹ФИО› жалоб нет'),
+    ('иванову и.и., активация', '‹ФИО›, активация'),
+    ('у сидоровых а.б.', 'у ‹ФИО›'),
+    ('зубов т.е. нет', 'зубов т.е. нет'),
+])
+def test_lowercase_oblique_with_initials(raw, out):
+    assert scrub_text(raw)[0] == out

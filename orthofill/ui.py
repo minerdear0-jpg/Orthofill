@@ -469,11 +469,13 @@ class App:
         return w.tk.eval(orig)
 
     def _track_menu(self, menu: tk.Menu):
+        done = menu.__dict__.setdefault('_tracked', set())   # пункт обёрнут — не второй раз
         end = menu.index('end')
         for i in range(0 if end is None else end + 1):
             kind = menu.type(i)
-            if kind not in ('command', 'radiobutton', 'checkbutton'):
+            if kind not in ('command', 'radiobutton', 'checkbutton') or i in done:
                 continue
+            done.add(i)
             orig = str(menu.entrycget(i, 'command'))
             if not orig:
                 continue
@@ -569,6 +571,7 @@ class App:
     def _refresh_presets(self):
         m = self.preset_menu
         m.delete(0, 'end')
+        m.__dict__.pop('_tracked', None)      # пункты созданы заново
         for p in self.ctl.presets.list():
             m.add_radiobutton(label=p.name, value=p.id, variable=self.preset_var,
                               command=lambda pid=p.id: self.switch_to(pid))

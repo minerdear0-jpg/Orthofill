@@ -207,3 +207,12 @@ def _text(w):
         return w.cget('text')
     except Exception:
         return None
+
+
+def test_protocol_menu_counted_once(app, ev):
+    app.ctl.generate('лигатурная')
+    m = app._protocol_menu('1.0')
+    i = next(k for k in range(m.index('end') + 1)
+             if m.type(k) == 'command' and m.entrycget(k, 'label') == 'Выделить всё')
+    m.invoke(i)
+    assert ev.count(('ui', {'name': 'Выделить всё'})) == 1
