@@ -1,4 +1,4 @@
 """Orthofill — краткая запись ортодонта → протокол приёма по классификатору."""
 
-__version__ = "0.2.0b5"
-VERSION_LABEL = "0.2 beta 5"
+__version__ = "0.2.0b6"
+VERSION_LABEL = "0.2 beta 6"
