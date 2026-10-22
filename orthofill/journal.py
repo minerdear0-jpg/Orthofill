@@ -56,7 +56,14 @@ CREATE TABLE IF NOT EXISTS not_together (
     preset_id INTEGER NOT NULL, a TEXT NOT NULL, b TEXT NOT NULL,
     PRIMARY KEY (preset_id, a, b));
 """
-SCHEMA_VERSION = 3
+# Версия 4 (0.3 beta 3): фразы врача (SmartPhrase)
+_SCHEMA_V4 = """
+CREATE TABLE IF NOT EXISTS phrases (
+    preset_id INTEGER NOT NULL, pos INTEGER NOT NULL, name TEXT NOT NULL,
+    template TEXT NOT NULL, uses INTEGER NOT NULL DEFAULT 0, created_at TEXT,
+    PRIMARY KEY (preset_id, name));
+"""
+SCHEMA_VERSION = 4
 
 
 def _now() -> str:
@@ -110,6 +117,7 @@ class Journal:
                 if col not in cols:
                     self._db.execute(f'ALTER TABLE preset_items ADD COLUMN {col} TEXT')
             self._db.executescript(_SCHEMA_V3)
+            self._db.executescript(_SCHEMA_V4)
             self._db.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
 
     def _exec(self, sql: str, args=()) -> sqlite3.Cursor:

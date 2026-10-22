@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .journal import Journal, _now
-from .workbook import DictEntry, Item, ReferenceCase, Workbook, normalize_references
+from .workbook import DictEntry, Item, Phrase, ReferenceCase, Workbook, normalize_references
 
 
 @dataclass
@@ -69,15 +69,15 @@ class PresetStore:
         db = self._db
         if not keep_dictionary:
             db.execute('DELETE FROM dictionary WHERE preset_id=?', (pid,))
-        self._write_items(pid, wb.items, wb.not_together)
+        self._write_items(pid, wb.items, wb.not_together, wb.phrases)
         self._write_references(pid, wb.references)
         self._write_dictionary(pid, wb.dictionary)
         db.execute('INSERT INTO imports (preset_id, at, file_name, sha256, items, references_)'
                    ' VALUES (?,?,?,?,?,?)',
                    (pid, _now(), wb.source, wb.sha256, len(wb.items), len(wb.references)))
 
-    def _write_items(self, pid: int, items, pairs=()) -> None:
-        """Пункты пресета и пары «не вместе» (они живут вместе с пунктами)."""
+    def _write_items(self, pid: int, items, pairs=(), phrases=()) -> None:
+        """Пункты пресета, пары «не вместе» и фразы врача (живут вместе с пунктами)."""
         self._db.execute('DELETE FROM preset_items WHERE preset_id=?', (pid,))
         for pos, it in enumerate(items):
             self._db.execute(
@@ -92,6 +92,10 @@ class PresetStore:
         self._db.execute('DELETE FROM not_together WHERE preset_id=?', (pid,))
         self._db.executemany('INSERT OR IGNORE INTO not_together VALUES (?,?,?)',
                              [(pid, *sorted(p)) for p in pairs])
+        self._db.execute('DELETE FROM phrases WHERE preset_id=?', (pid,))
+        self._db.executemany('INSERT OR REPLACE INTO phrases VALUES (?,?,?,?,?,?)',
+                             [(pid, k, ph.name, ph.template, ph.uses, _now())
+                              for k, ph in enumerate(phrases)])
 
     def _write_references(self, pid: int, references) -> None:
         for table in ('reference_cases', 'reference_lines'):
@@ -112,7 +116,7 @@ class PresetStore:
         refs, words = draft.replay(self._load_references(preset_id),
                                    self._load_dictionary(preset_id))
         with self._db:
-            self._write_items(preset_id, draft.wb.items, draft.wb.not_together)
+            self._write_items(preset_id, draft.wb.items, draft.wb.not_together, draft.wb.phrases)
             self._write_references(preset_id, refs)
             self._db.execute('DELETE FROM dictionary WHERE preset_id=?', (preset_id,))
             self._write_dictionary(preset_id, words)
@@ -148,17 +152,20 @@ class PresetStore:
         dictionary = self._load_dictionary(preset_id)
         pairs = [tuple(p) for p in db.execute(
             'SELECT a, b FROM not_together WHERE preset_id=? ORDER BY a, b', (preset_id,))]
+        phrases = [Phrase(n, t, u) for n, t, u in db.execute(
+            'SELECT name, template, uses FROM phrases WHERE preset_id=? ORDER BY pos', (preset_id,))]
         content = json.dumps(
             {'items': [[i.id, i.text, i.method, i.when, i.default, i.words, i.combine,
                         i.condition] for i in items],
              'references': [[r.case_id, r.raw, r.lines] for r in refs],
-             'not_together': pairs}, ensure_ascii=False)
+             'not_together': pairs,
+             'phrases': [[p.name, p.template] for p in phrases]}, ensure_ascii=False)
         wb = Workbook(path=None, sha256=hashlib.sha256(content.encode()).hexdigest(),
                       items=items, by_id=by_id,
                       sections=[it for it in items if it.level == 1],
                       references=refs, problems=[], warnings=[],
                       name=name, source=source or '', dictionary=dictionary,
-                      not_together=pairs)
+                      not_together=pairs, phrases=phrases)
         normalize_references(wb)          # эталоны, сохранённые в 0.2 beta 1
         return wb
 
