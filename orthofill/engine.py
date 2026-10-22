@@ -79,16 +79,52 @@ def rule_kind(group: Item) -> str | None:
     return None if kind == 'words' else kind
 
 
-def _guess_when(it: Item, refs: list[set[str]]) -> str:
-    """«Всегда» — если пункт есть больше чем в половине эталонов (без эталонов — всегда)."""
-    used = sum(it.id in r for r in refs)
-    return 'always' if not refs or used * 2 > len(refs) else 'mentioned'
+def _guess_when(it: Item, refs: list[tuple[set[str], set[str]]]) -> str:
+    """«Всегда» — из идеальных результатов пресета (эталоны, колонки E–F): пункт есть
+    в результате больше чем в половине примеров, где запись о нём не говорит. Если
+    пункт попал в результат из-за слов записи примера — это «может попасть», не
+    «всегда» (заказчик 22.10). Без эталонов — всегда."""
+    if not refs:
+        return 'always'
+    free = [codes for codes, said in refs if it.id not in said]
+    if not free:
+        return 'mentioned'
+    used = sum(it.id in codes for codes in free)
+    return 'always' if used * 2 > len(free) else 'mentioned'
+
+
+_EVIDENCE: dict = {}       # доводы эталонов — на набор (эталоны + пункты + словарь)
+
+
+def _ref_evidence(wb: Workbook) -> list[tuple[set[str], set[str]]]:
+    """(коды идеального результата, коды, сказанные в записи примера) — по эталонам.
+    Пресет перезагружается часто (новый объект) — кэш по содержимому, не по объекту."""
+    key = (tuple((r.raw, tuple(c for c, _ in r.lines)) for r in wb.references if r.lines),
+           tuple((it.id, it.text, tuple(it.words)) for it in wb.items),
+           tuple((e.word, e.code) for e in wb.dictionary))
+    if key in _EVIDENCE:
+        return _EVIDENCE[key]
+    out = []
+    for r in wb.references:
+        if not r.lines:
+            continue
+        codes = {c for c, _ in r.lines}
+        try:
+            said = _Said(_Ctx(r.raw, wb))
+            said_codes = {it.id for it in wb.items if not it.children and it.id in said}
+        except Exception:
+            said_codes = set()
+        out.append((codes, said_codes))
+    if len(_EVIDENCE) > 64:
+        _EVIDENCE.clear()
+    _EVIDENCE[key] = out
+    return out
 
 
 def _effective_when(wb: Workbook) -> dict[str, str]:
     """«Когда в протоколе» для отдельных пунктов: заданное или угаданное заново
     по текущим эталонам (угаданное не хранится — меняется с эталонами)."""
-    refs = [{code for code, _ in case.lines} for case in wb.references if case.lines]
+    refs = _ref_evidence(wb)
     out = {it.id: it.when or _guess_when(it, refs) for it in wb.items
            if not it.children and it.level == 2 and not it.orphan}
     for it in wb.items:             # пункт-сирота: по угаданному условию или по упоминанию
@@ -122,7 +158,7 @@ def guess_settings(wb: Workbook) -> None:
     """Записать угаданные свойства в пункты как явные (для редактора и экспорта
     «как сейчас работает»). Разбор их не требует: build_protocol угадывает сам.
     Заданное явно не трогается."""
-    refs = [{code for code, _ in case.lines} for case in wb.references if case.lines]
+    refs = _ref_evidence(wb)
     for it in wb.items:
         if it.children:
             if it.method is None:
