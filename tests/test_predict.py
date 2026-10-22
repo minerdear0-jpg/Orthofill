@@ -75,3 +75,24 @@ def test_predict_fast(wb):
         predict(wb, [('2', '2b', '2b2')], st)
         rank(paths, st)
     assert time.perf_counter() - start < 2.0
+
+
+# ---------- 0.5 b3: скелет ----------
+from orthofill.predict import skeleton_blocks  # noqa: E402
+
+
+def test_skeleton_usual_missing(wb):
+    st = _stats(5, **{'2': 5, '2c': 5, '4': 5, '4b': 5})
+    blocks = skeleton_blocks(wb, {'2', '2b', '2b2', '4', '4b', '4b5'}, [('2', '2b', '2b2')], st)
+    assert [c for c, _ in blocks] == ['2c']
+
+
+def test_skeleton_next_flag(wb):
+    st = _stats(5, **{'4': 5, '4f': 5})
+    blocks = dict(skeleton_blocks(wb, {'2', '2b', '2b2'}, [('2', '2b', '2b2')], st))
+    assert blocks['4f'] is True and list(blocks.values()).count(True) == 1
+
+
+def test_skeleton_without_history(wb):
+    blocks = skeleton_blocks(wb, {'2', '2b', '2b2'}, [('2', '2b', '2b2')], PathStats())
+    assert blocks == [('2c', True)]

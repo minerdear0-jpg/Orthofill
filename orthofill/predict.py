@@ -61,3 +61,21 @@ def predict(wb: Workbook, note_paths: list[Path], stats: PathStats,
         out.append(Prediction(first.path, 'usual', True))
     out += rest
     return out[:limit]
+
+
+def skeleton_blocks(wb: Workbook, protocol_codes: set[str], note_paths: list[Path],
+                    stats: PathStats) -> list[tuple[str, bool]]:
+    """Скелет холста (0.5 b3): пункты разделов, которых ещё нет в протоколе и которые
+    врач обычно пишет, плюс первый кандидат предсказания («следующий», True).
+    По порядку файла."""
+    preds = predict(wb, note_paths, stats, limit=1)
+    nxt = preds[0].path[1] if preds and len(preds[0].path) == 2 else None
+    out = []
+    for sec, unit in _units(wb):
+        if unit in protocol_codes:
+            continue
+        if unit == nxt:
+            out.append((unit, True))
+        elif stats.usual(unit):
+            out.append((unit, False))
+    return out
