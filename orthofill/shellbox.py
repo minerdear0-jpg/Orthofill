@@ -24,6 +24,7 @@ class ShellBox:
         self.choices: list[Path] = []
         self.selected = -1
         self.ghost = ''
+        self._ghost_target: tuple | None = None   # (путь, оставшиеся слова) — куда → допишет
         self.list_shown = False
         self._expanded: tuple[str, str] | None = None     # (строка до, строка после) последнего разворота
         self._replace: tuple[int, int] | None = None       # (строка, уровень): список — соседи уровня
@@ -84,6 +85,7 @@ class ShellBox:
         return n, line, done, typed, start
 
     def close(self):
+        self._ghost_target = None
         self._cancel_dwell()
         self._replace = None
         self._list_line = None
@@ -138,7 +140,9 @@ class ShellBox:
             return
         unique = len(r.leaves) == 1
         if r.common != done and (unique or len(r.common) > len(done)):
-            self.ghost = format_path(self.wb, r.common if not unique else r.leaves[0])
+            target = r.leaves[0] if unique else r.common
+            self.ghost = format_path(self.wb, target)
+            self._ghost_target = (target, [] if unique else r.rest)
             self._show_ghost()
         if not unique and len(r.choices) > 1:
             self._show_list(self._rank(r.choices), 0)     # карусель: первый выбран, Tab — дальше
@@ -184,8 +188,9 @@ class ShellBox:
             self.ghost = format_path(self.wb, path) + ('' if is_leaf(self.wb, path) else ' › …')
             self._show_ghost()
 
-    def _take_prediction(self, levels: int | None) -> bool:
-        """Принять предсказание: целиком (levels=None) или до levels уровней."""
+    def _take_prediction(self, levels: int | None, branches: bool = True) -> bool:
+        """Принять предсказание: целиком (levels=None) или до levels уровней.
+        branches — у группы сразу открыть карусель веток (Enter), → — только текст."""
         pred = self.prediction
         if pred is None:
             return False
@@ -197,7 +202,7 @@ class ShellBox:
                         source=pred.source)
         self._pred_taken = True
         self.close()
-        if levels is None and not is_leaf(self.wb, path):
+        if branches and levels is None and not is_leaf(self.wb, path):
             self._branches()
         return True
 
@@ -327,7 +332,21 @@ class ShellBox:
             return self._replace_level(self.choices[k])
         return self._accept(self.choices[k])
 
-    def _accept(self, path: Path, rest: list[str] | None = None) -> bool:
+    def _right_at_end(self) -> bool:
+        """→ в конце строки — дописать серую подсказку (как в fish), без списка."""
+        n, line = self._line()
+        col = int(self.text.index('insert').split('.')[1])
+        if col != len(line):
+            return False
+        if not line.strip():
+            self._fresh_prediction(n, line)
+            return self.prediction is not None and self._take_prediction(None, branches=False)
+        if self._ghost_target is None:
+            return False
+        path, rest = self._ghost_target
+        return self._accept(path, rest, branches=False)
+
+    def _accept(self, path: Path, rest: list[str] | None = None, branches: bool = True) -> bool:
         n, _ = self._line()
         _, _, _, typed, _ = self._state()
         tail = ' '.join(rest or [])
@@ -341,8 +360,10 @@ class ShellBox:
         self.close()
         self.text.focus_set()
         self.update()
-        if not tail and not is_leaf(self.wb, path) and not self.list_shown:
+        if branches and not tail and not is_leaf(self.wb, path) and not self.list_shown:
             self._branches()            # группа — сразу её ветки (как Tab по предсказанию)
+        elif not branches:
+            self.close()                # → — только текст (как в fish)
         return True
 
     def _finish(self) -> bool:
@@ -516,6 +537,8 @@ class ShellBox:
     def _arrow(self, step: int, e):
         if not self.on() or (e is not None and e.state & (0x1 | 0x4)) or self.list_shown:
             return None
+        if step > 0 and self._right_at_end():
+            return 'break'
         n, line = self._line()
         if SEP not in line:
             return None

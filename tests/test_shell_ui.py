@@ -596,3 +596,31 @@ def test_siblings_carousel(sh):
     _key(sh, 'Return')
     from orthofill.shell import parse_line
     assert parse_line(_wb(sh), _raw(sh).split('\n')[0]) == ('4', '4f', '4f2')
+
+
+# ---------- → дописывает серую подсказку (как в fish) ----------
+def test_right_accepts_prediction(sh):
+    _finish_line(sh, ('2', '2b', '2b2'))
+    _key(sh, 'Right')
+    assert _raw(sh).split('\n')[1] == format_path(_wb(sh), ('2', '2c')) + ' › '
+    assert not sh.shell_box.list_shown                     # только текст, без списка
+
+
+def test_right_accepts_unique_completion(sh):
+    _type(sh, 'лигатурная')
+    _key(sh, 'Right')
+    assert _raw(sh) == format_path(_wb(sh), ('2', '2b', '2b2'))
+
+
+def test_right_completes_common_prefix(sh):
+    _type(sh, 'ду вер')
+    _key(sh, 'Right')
+    assert _raw(sh) == format_path(_wb(sh), ('4', '4b')) + ' › '
+    assert not sh.shell_box.list_shown
+
+
+def test_right_without_ghost_moves_cursor(sh):
+    _type(sh, 'квакозябра')
+    sh.raw_txt.mark_set('insert', '1.2')
+    _key(sh, 'Right')
+    assert sh.raw_txt.index('insert') == '1.3' and _raw(sh) == 'квакозябра'
