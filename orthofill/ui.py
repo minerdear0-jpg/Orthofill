@@ -135,12 +135,16 @@ class App:
         self.hints_on = tk.BooleanVar(value=self.ctl.journal.get_setting('hints', '1') == '1')
         hints_cb = ttk.Checkbutton(right, text='Подсказки', variable=self.hints_on,
                                    command=self._toggle_hints)
+        self.shell_var = tk.BooleanVar(value=False)    # запись как оболочка (0.5) — у пресета
+        shell_cb = ttk.Checkbutton(right, text='Оболочка', variable=self.shell_var,
+                                   command=self._toggle_shell)
         self.diag_var = tk.BooleanVar(value=False)
         diag_cb = ttk.Checkbutton(right, text='Диагностика', variable=self.diag_var,
                                   command=self._toggle_diag)
         self.diag_btn = ttk.Button(right, text='Папка', command=self.open_diag_folder)
         # широко — в ряд; узко — сеткой 2×2 (см. _relayout)
-        self.bar_widgets = [self.details_btn, topmost_cb, hints_cb, diag_cb, self.diag_btn]
+        self.bar_widgets = [self.details_btn, topmost_cb, hints_cb, shell_cb, diag_cb,
+                            self.diag_btn]
         self._apply_topmost()
 
         # Ввод и протокол
@@ -586,6 +590,8 @@ class App:
                       state='normal' if self.ctl.workbook else 'disabled')
         self._track_menu(m)
         wb = self.ctl.workbook
+        if hasattr(self, 'shell_box'):
+            self._sync_shell()
         self.preset_var.set(self.ctl.preset_id if self.ctl.preset_id is not None else -1)
         self.preset_btn.configure(text=f'Пресет: {wb.name}' if wb else 'Пресет')
         self._show_preset_name()
@@ -1432,6 +1438,18 @@ class App:
         else:
             import subprocess
             subprocess.Popen(['xdg-open', str(d)])
+
+    def _toggle_shell(self):
+        self.ctl.set_shell_mode(bool(self.shell_var.get()))
+        self.ctl.track('ui', name='shell_on' if self.shell_var.get() else 'shell_off')
+        self._apply_shell_mode()
+
+    def _sync_shell(self):
+        """Флажок «Оболочка» — как у текущего пресета."""
+        on = self.ctl.shell_mode
+        if bool(self.shell_var.get()) != on:
+            self.shell_var.set(on)
+            self._apply_shell_mode()
 
     def _toggle_hints(self):
         self.ctl.journal.set_setting('hints', '1' if self.hints_on.get() else '0')

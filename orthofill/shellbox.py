@@ -27,6 +27,8 @@ class ShellBox:
         self._expanded: tuple[str, str] | None = None     # (строка до, строка после) последнего разворота
         self._replace: tuple[int, int] | None = None       # (строка, уровень): список — соседи уровня
         self._dwell_job = None
+        # телеметрия текущей строки (без текста): Tab, ?, набрано символов, «не подходит» показано
+        self._stat = {'tabs': 0, 'questions': 0, 'typed': 0, 'bad': False}
         text.tag_configure('shell_bad', foreground='#b42318', underline=True)
         text.tag_configure('shell_ok', foreground='#1b1b1a')
         bg = text.cget('background')
@@ -72,6 +74,12 @@ class ShellBox:
         self.tail.place_forget()
         self.frame.place_forget()
 
+    def _track(self, action: str, **data):
+        try:
+            self.app.ctl.track('shell', action=action, **data)
+        except Exception:
+            pass
+
     # ---------- после набора ----------
     def update(self):
         t = self.text
@@ -94,6 +102,9 @@ class ShellBox:
             if words:
                 w = words[k]
                 t.tag_add('shell_bad', f'{n}.{start + w.start()}', f'{n}.{start + w.end()}')
+                if not self._stat['bad']:
+                    self._stat['bad'] = True
+                    self._track('bad_word', word_index=k)
             return
         unique = len(r.leaves) == 1
         if r.common != done and (unique or len(r.common) > len(done)):
@@ -175,6 +186,8 @@ class ShellBox:
 
     def _accept(self, path: Path) -> bool:
         n, _ = self._line()
+        _, _, _, typed, _ = self._state()
+        self._stat['typed'] += len(typed.strip())     # набрано врачом — до разворота
         self._set_line(n, self._path_text(path))
         self.close()
         self.text.focus_set()
@@ -193,6 +206,10 @@ class ShellBox:
         self.close()
         self._expanded = None
         self._mark_ok()
+        st = self._stat
+        self._track('line_done', depth=len(path), tabs=st['tabs'], questions=st['questions'],
+                    typed_chars=st['typed'], line_chars=len(line))
+        self._stat = {'tabs': 0, 'questions': 0, 'typed': 0, 'bad': False}
         return True
 
     def _branches(self) -> bool:
@@ -215,6 +232,7 @@ class ShellBox:
     def _tab(self, e):
         if not self.on() or (e is not None and e.state & (0x1 | 0x4)):
             return None
+        self._stat['tabs'] += 1
         if self._replace and self.list_shown and self.selected >= 0:
             return 'break' if self._replace_level(self.choices[self.selected]) else None
         if self.list_shown and self.selected >= 0:
@@ -230,6 +248,7 @@ class ShellBox:
                 self._accept(r.common)
             elif r.leaves:
                 self._show_list(r.choices)
+                self._track('ambiguous', count=len(r.choices))
             return 'break'
         self._branches()
         return 'break'
@@ -277,6 +296,7 @@ class ShellBox:
         if e.keysym not in ('Left', 'Right', 'Up', 'Down', 'Return', 'KP_Enter', 'Tab', 'Escape'):
             self._cancel_dwell()            # набор — не «намеренная остановка»
         if e.char == '?':                   # ветки уровня; в текст не вставляется
+            self._stat['questions'] += 1
             self._branches()
             return 'break'
         if e.keysym == 'BackSpace':         # не отдельной привязкой: общая <KeyPress>
@@ -377,6 +397,7 @@ class ShellBox:
         self._set_line(n, self._path_text(tuple(path)))
         self.close()
         self._mark_ok()
+        self._track('replace_level', depth=k + 1, kept=len(path) - k - 1)
         return True
 
     def _backspace(self, e):

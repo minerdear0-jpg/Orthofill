@@ -482,7 +482,7 @@ class Controller:
             changed = (sum(1 for line in difflib.ndiff(p.text.splitlines(), text.splitlines())
                            if line[:1] in '+-') if edited else 0)
             self.track('note_confirm', via=via, edited_lines=changed, length=len(raw),
-                       **(stats or {}))
+                       mode='shell' if self.shell_mode else 'comma', **(stats or {}))
         defaults = f'по умолчанию: {", ".join(p.defaults)}' if p.defaults else ''
         status = 'Скопировано в буфер' if copy else 'Протокол пересобран (в буфер не копировался)'
         return GenerateResult(p.text, status, p.warnings, defaults, copy, p.rows)

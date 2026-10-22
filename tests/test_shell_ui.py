@@ -216,3 +216,47 @@ def test_complete_line_no_ghost(sh):
     _line_at(sh, ('4', '4b', '4b5'))
     sh.shell_box.update()
     assert not sh.shell_box.ghost and not sh.shell_box.list_shown
+
+
+# ---------- Task 6: переключатель и телеметрия ----------
+def test_switch_per_preset(app):
+    b = app.ctl.preset_id                       # «консультация» — текущий
+    a = next(p.id for p in app.ctl.presets.list() if p.id != b)
+    app.shell_var.set(True)
+    app._toggle_shell()
+    assert app.ctl.shell_mode
+    app.switch_to(a)
+    assert not app.shell_var.get() and not app.ctl.shell_mode
+    app.switch_to(b)
+    assert app.shell_var.get() and app.ctl.shell_mode
+
+
+def test_switch_back_restores_hints(app):
+    app.shell_var.set(True)
+    app._toggle_shell()
+    app.shell_var.set(False)
+    app._toggle_shell()
+    app.ctl.learn('торк', '4g3')
+    _type(app, 'тор')
+    app.hint_box.update()
+    assert app.hint_box.visible
+
+
+def test_line_done_event_no_text(sh, monkeypatch):
+    seen = []
+    monkeypatch.setattr(sh.ctl, 'track', lambda e, **d: seen.append((e, d)))
+    _type(sh, 'лигатурная')
+    _key(sh, 'Tab')
+    _key(sh, 'Return')
+    done = [d for e, d in seen if e == 'shell' and d.get('action') == 'line_done']
+    assert done and done[-1]['depth'] == 3 and done[-1]['tabs'] == 1
+    assert done[-1]['typed_chars'] == len('лигатурная')
+    assert 'лигатур' not in repr(seen)
+
+
+def test_bad_word_event_once(sh, monkeypatch):
+    seen = []
+    monkeypatch.setattr(sh.ctl, 'track', lambda e, **d: seen.append((e, d)))
+    _type(sh, 'эластики кв')
+    _type(sh, 'а')
+    assert sum(1 for e, d in seen if e == 'shell' and d.get('action') == 'bad_word') == 1
