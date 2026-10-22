@@ -374,6 +374,35 @@ class Controller:
                             if ok == len(results) else
                             f'⚠ эталоны {ok}/{len(results)} — подробнее')
 
+    # ---------- оболочка (0.5) ----------
+    @property
+    def shell_mode(self) -> bool:
+        """Запись как оболочка — для текущего пресета (переключатель)."""
+        return self.preset_id is not None and \
+            self.journal.get_setting(f'shell:{self.preset_id}') == '1'
+
+    def set_shell_mode(self, on: bool) -> None:
+        if self.preset_id is not None:
+            self.journal.set_setting(f'shell:{self.preset_id}', '1' if on else '0')
+
+    def _build(self, raw: str, tokens=()) -> Protocol:
+        if self.shell_mode:
+            from .shellproto import shell_protocol
+            return shell_protocol(self.workbook, raw)
+        return build_protocol(self.workbook, raw, list(tokens))
+
+    def _shell_unknown(self, raw: str) -> list[tuple[int, int, str]]:
+        """Непонятые строки оболочки — целиком."""
+        from .shell import is_leaf, parse_line
+        out, pos = [], 0
+        for line in raw.split('\n'):
+            if line.strip():
+                path = parse_line(self.workbook, line)
+                if path is None or not is_leaf(self.workbook, path):
+                    out.append((pos, pos + len(line), line))
+            pos += len(line) + 1
+        return out
+
     # ---------- протокол ----------
     def preview(self, raw: str, tokens=()) -> GenerateResult:
         """Черновик протокола при наборе: без журнала, буфера и диагностики."""
@@ -381,7 +410,7 @@ class Controller:
             return GenerateResult('', '', [], '', False)
         t0 = time.perf_counter()
         try:
-            p = build_protocol(self.workbook, raw, list(tokens))
+            p = self._build(raw, tokens)
         except Exception as e:
             self._log_error('preview', e)
             return GenerateResult('', f'✗ Ошибка: {e}', [], '', False)
@@ -404,7 +433,7 @@ class Controller:
         if not raw.strip():
             return fail('Введите краткую запись')
         try:
-            p = build_protocol(self.workbook, raw, list(tokens))
+            p = self._build(raw, tokens)
         except Exception as e:
             self._log_error('generate', e)
             return fail(f'✗ Ошибка: {e}')
@@ -457,6 +486,9 @@ class Controller:
         если raw задан — черновика. Слова-токены не подчёркиваются: их врач принял."""
         if self.workbook is None:
             return []
+        if self.shell_mode:
+            text = raw if raw is not None else (self._last_raw if self.last_protocol else '')
+            return self._shell_unknown(text)
         draft = raw is not None
         if not draft and self.last_protocol is None:
             return []

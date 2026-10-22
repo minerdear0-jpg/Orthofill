@@ -262,7 +262,7 @@ class Draft:
         """Строки эталона := то, что программа строит сейчас по черновику."""
         case = next(r for r in self.wb.references if r.case_id == case_id)
         self._begin()
-        case.lines[:] = list(engine.build_protocol(self.wb, case.raw).lines)
+        case.lines[:] = list(engine.protocol_for(self.wb, case.raw).lines)
         self.ops.append(('accept_ref', case_id, list(case.lines)))
 
     def delete_word(self, word: str) -> None:

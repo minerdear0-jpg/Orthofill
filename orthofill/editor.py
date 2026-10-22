@@ -275,8 +275,8 @@ class EditorWindow:
         if sel and tree.exists(sel[0]):
             self._focus(sel[0])
         # протоколы эталонов — один раз на правку: и сверка, и счётчик у пункта
-        from .engine import build_protocol, check_references
-        prots = [build_protocol(wb, r.raw) for r in wb.references]
+        from .engine import check_references, protocol_for
+        prots = [protocol_for(wb, r.raw) for r in wb.references]
         results = check_references(wb, prots)
         self._ref_out = [{c for c, _ in p.lines} for p in prots]
         ok = sum(r.ok for r in results)
