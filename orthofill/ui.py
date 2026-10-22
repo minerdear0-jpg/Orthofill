@@ -19,6 +19,8 @@ def window_title() -> str:
     from .buildinfo import build_id
     return f'{TITLE} · сборка {build_id()}'
 CHANGELOG = 'CHANGELOG.md'
+_LIVE_ASK = 'Запись изменилась — обновить протокол?'
+_LIVE_KEPT = 'Протокол поправлен вручную — запись в него больше не попадает'
 REMINDER = 'Проверьте протокол перед вставкой в служебное ПО'
 DISCLAIMER = 'Программа формирует черновик протокола; ответственность за содержание несёт врач.'
 
@@ -49,8 +51,14 @@ def _set_dpi_aware() -> None:
 
 
 class App:
+    live_delay = 300        # мс паузы в наборе до пересборки черновика
+    unknown_delay = 800     # мс до подчёркивания непонятых слов
+
     def __init__(self, root: tk.Tk, controller: Controller):
         self.root, self.ctl = root, controller
+        self._live_job = self._unknown_job = None
+        self.live_frozen = False        # протокол поправлен руками — живое обновление стоит
+        self._live_kept = False         # «Оставить» — полоска больше не всплывает
         self.mode: str | None = None
         self._setup_fonts()
         self._build()
@@ -157,6 +165,12 @@ class App:
         self.raw_txt.tag_bind('unknown', '<Leave>', lambda e: self.raw_txt.configure(cursor='xterm'))
         self.raw_txt.tag_bind('unknown', '<Button-1>', self._on_unknown_click)
         self.raw_txt.bind('<KeyRelease>', self._unmark_unknown, add='+')
+        self.raw_txt.bind('<<Modified>>', self._on_raw_modified, add='+')
+        # токены: слово, принятое подсказкой, привязано к пункту (подсвечено)
+        self.raw_txt.tag_configure('token', underline=1, foreground='#1f7a3f')
+        self.raw_txt.tag_bind('token', '<Enter>', self._on_token_enter)
+        self._token_words: dict[str, tuple[str, str]] = {}   # тег → (слово, во что превратится)
+        self._token_seq = 0
         f.pack(fill='both', expand=True)
         from .hintbox import HintBox
         self.hint_box = HintBox(self, self.raw_txt)
@@ -207,6 +221,16 @@ class App:
                    command=lambda: self.switch_bar.pack_forget()).pack(side='right')
         ttk.Button(self.switch_bar, text='Пересобрать',
                    command=self._rebuild_after_switch).pack(side='right', padx=(0, 6))
+        # живой протокол: после ручной правки — спросить, а не стереть
+        self.live_bar = tk.Frame(self.out_panel, bg=WARN_BG, highlightthickness=1,
+                                 highlightbackground=WARN_BORDER, padx=8, pady=4)
+        self.live_label = tk.Label(self.live_bar, text=_LIVE_ASK, bg=WARN_BG, fg=WARN_FG,
+                                   justify='left', wraplength=420)
+        self.live_label.pack(side='left')
+        self.live_keep_btn = ttk.Button(self.live_bar, text='Оставить', command=self._live_keep)
+        self.live_keep_btn.pack(side='right')
+        ttk.Button(self.live_bar, text='Обновить',
+                   command=self._live_update_now).pack(side='right', padx=(0, 6))
         f, self.out_txt = self._text(self.out_panel, 6)
         f.pack(fill='both', expand=True)
         self.out_frame = f
@@ -538,6 +562,7 @@ class App:
                 and ed.draft.preset_id == update_id:
             ed._drop_draft()          # черновик — по обновлённому пресету
             ed._done()
+        self._after_preset_change()
         self._show_file_status()
         if self.ctl.details and not self.ctl.file_status.startswith('✓'):
             self.show_details()
@@ -560,6 +585,8 @@ class App:
     def switch_to(self, pid: int):
         if pid == self.ctl.preset_id:
             return
+        self._cancel_live()
+        self._clear_tokens()                # коды токенов — от прежнего пресета
         out = self.out_txt.get('1.0', 'end-1c')
         edited = self.ctl.needs_confirm_regenerate(out)
         prev = self.ctl.preset_id
@@ -576,12 +603,14 @@ class App:
             return
         self._undo_to = prev
         self._regenerate_silently(
-            raw, f'Пресет: {self.ctl.workbook.name} — протокол пересобран; '
-                 f'в буфере прежний — нажмите «Копировать»', undo=True)
+            raw, f'Пресет: {self.ctl.workbook.name} — протокол пересобран (черновик); '
+                 f'Ctrl+Enter — подтвердить и скопировать', undo=True)
 
     def _regenerate_silently(self, raw: str, status: str, undo=False):
-        """Пересобрать без копирования — буфер при смене пресета не меняется."""
-        r = self.ctl.generate(raw, copy=False)
+        """Пересобрать черновиком: без буфера и журнала (смена пресета, сохранение)."""
+        self._unfreeze()
+        r = self.ctl.preview(raw, self.tokens())
+        self._last_draft = r
         if r.text:
             self._show_protocol(r.rows)
             self._status(status, r.warnings, r.defaults_line, undo=undo, rows=r.rows)
@@ -593,30 +622,154 @@ class App:
         raw = self.raw_txt.get('1.0', 'end-1c').strip()
         if raw:
             self._regenerate_silently(
-                raw, 'Протокол пересобран; в буфере прежний — нажмите «Копировать»')
+                raw, 'Протокол пересобран (черновик); Ctrl+Enter — подтвердить и скопировать')
 
     def _undo_switch(self):
         pid, self._undo_to = self._undo_to, None
         if pid is None or not self.ctl.presets.exists(pid):
             return
+        self._clear_tokens()
         self.ctl.switch_preset(pid)
         self._show_file_status()
         raw = self.raw_txt.get('1.0', 'end-1c').strip()
         if raw:
             self._regenerate_silently(
                 raw, f'Пресет возвращён: {self.ctl.workbook.name}; '
-                     f'в буфере прежний — нажмите «Копировать»')
+                     f'Ctrl+Enter — подтвердить и скопировать')
+
+    # ---------- живой протокол ----------
+    def bind_token(self, start: str, end: str, code: str, becomes: str = ''):
+        """Привязать слово записи к пункту: подсветка и тег с кодом."""
+        t = self.raw_txt
+        self._token_seq += 1
+        tag = f'tok:{code}#{self._token_seq}'
+        t.tag_add('token', start, end)
+        t.tag_add(tag, start, end)
+        self._token_words[tag] = (t.get(start, end), becomes)
+
+    def _clear_tokens(self):
+        t = self.raw_txt
+        t.tag_remove('token', '1.0', 'end')
+        for tag in self._token_words:
+            t.tag_delete(tag)
+        self._token_words.clear()
+
+    def _check_tokens(self):
+        """Слово токена изменили (набор внутри, удаление части, дописали буквы
+        вплотную) — привязку снять."""
+        t = self.raw_txt
+        for tag, (word, _) in list(self._token_words.items()):
+            r = t.tag_ranges(tag)
+            glued = len(r) == 2 and (t.get(f'{r[0]}-1c', r[0]).isalpha() or
+                                     t.get(r[1], f'{r[1]}+1c').isalpha())
+            if len(r) != 2 or t.get(r[0], r[1]) != word or glued:
+                for i in range(0, len(r), 2):
+                    t.tag_remove('token', r[i], r[i + 1])
+                t.tag_delete(tag)
+                del self._token_words[tag]
+
+    def tokens(self) -> list[tuple[str, str]]:
+        """Слова записи, привязанные к пунктам принятой подсказкой."""
+        self._check_tokens()
+        t, out = self.raw_txt, []
+        for tag in self._token_words:
+            r = t.tag_ranges(tag)
+            out.append((t.get(r[0], r[1]), tag[4:].split('#')[0]))
+        return out
+
+    def _on_token_enter(self, e):
+        t = self.raw_txt
+        at = t.index(f'@{e.x},{e.y}')
+        tag = next((g for g in t.tag_names(at) if g in self._token_words), None)
+        if tag and self._token_words[tag][1]:
+            self.status_lbl.configure(text=f'→ {self._token_words[tag][1]}')
+
+    def _on_raw_modified(self, e=None):
+        if self.raw_txt.edit_modified():
+            self.raw_txt.edit_modified(False)
+            self._check_tokens()
+            self._schedule_live()
+
+    def _schedule_live(self):
+        for job in (self._live_job, self._unknown_job):
+            if job:
+                self.root.after_cancel(job)
+        self._unknown_job = None
+        self._live_job = self.root.after(self.live_delay, self._live)
+
+    def _live(self):
+        """Черновик протокола после паузы в наборе (без буфера и журнала)."""
+        self._live_job = None
+        if not self.raw_txt.get('1.0', 'end-1c').strip():     # запись стёрта — новый пациент
+            self._unfreeze()
+            self._live_show()
+            return
+        if self.live_frozen or self.ctl.needs_confirm_regenerate(self.out_txt.get('1.0', 'end-1c')):
+            self.live_frozen = True     # правку врача не стирать
+            if not self._live_kept:
+                self.live_label.configure(text=_LIVE_ASK)
+                self.live_keep_btn.pack(side='right')
+            self.live_bar.pack(fill='x', pady=(0, 6), before=self.out_frame)
+            return
+        self._live_show()
+
+    def _unfreeze(self):
+        self.live_frozen = self._live_kept = False
+        self.live_bar.pack_forget()
+
+    def _cancel_live(self):
+        for job in (self._live_job, self._unknown_job):
+            if job:
+                self.root.after_cancel(job)
+        self._live_job = self._unknown_job = None
+
+    def _live_show(self):
+        raw = self.raw_txt.get('1.0', 'end-1c')
+        tokens = self.tokens()
+        r = self.ctl.preview(raw, tokens)
+        self._last_draft = r
+        self._show_protocol(r.rows)
+        self._status(r.status, r.warnings, r.defaults_line, rows=r.rows)
+        if raw.strip():
+            self._unknown_job = self.root.after(
+                self.unknown_delay, lambda: self._show_unknown(self.ctl.find_unknown(raw, tokens)))
+        else:
+            self._show_unknown([])
+
+    def _live_update_now(self):
+        """«Обновить»: пересобрать протокол по записи (ручная правка уходит)."""
+        self._unfreeze()
+        self._live_show()
+
+    def _live_keep(self):
+        """«Оставить»: правка остаётся; полоска не спрашивает, но напоминает, что
+        запись в протокол больше не попадает (до «Обновить», Ctrl+Enter, пустой записи)."""
+        self._live_kept = True
+        self.live_label.configure(text=_LIVE_KEPT)
+        self.live_keep_btn.pack_forget()
 
     def generate(self):
+        """Ctrl+Enter — подтвердить протокол: в буфер — то, что видно справа (с
+        правками врача), запись — в журнал."""
         self.hint_box.close()
+        pending = self._live_job is not None
+        self._cancel_live()
         current = self.out_txt.get('1.0', 'end-1c')
-        if self.ctl.needs_confirm_regenerate(current) and not messagebox.askyesno(
-                TITLE, 'Заменить исправленный протокол новым?', icon='warning'):
-            return
-        r = self.ctl.generate(self.raw_txt.get('1.0', 'end-1c'))
-        if r.copied:
+        edited = self.ctl.needs_confirm_regenerate(current)
+        stale = edited and (pending or self.live_frozen)   # дописано после правки протокола
+        r = self.ctl.generate(self.raw_txt.get('1.0', 'end-1c'), tokens=self.tokens(),
+                              text=current if edited else None)
+        self._unfreeze()
+        if r.copied and edited:
+            self.ctl.confirm_shown(current)         # правка подтверждена — это и есть протокол
+        elif r.copied:
             self._show_protocol(r.rows)
-        self._status(r.status, r.warnings, r.defaults_line, rows=r.rows)
+        if r.copied and edited:
+            note = ('; записанное после правки в него не вошло — проверьте' if stale else '')
+            self._status(f'В буфере ваш исправленный протокол{note}. Отметить ошибку —',
+                         r.warnings, ask_mark=True, rows=r.rows)
+        else:
+            self._status(r.status, r.warnings, r.defaults_line, rows=r.rows)
         self._hide_learning()
         self._close_add()
         self._show_unknown([])
@@ -705,6 +858,9 @@ class App:
             return
         hit = self._hits[index]
         word = self._add_word
+        if word:            # для слова записи: привязать и запомнить — протокол соберётся сам
+            self._bind_word(word, hit.code)
+            return
         old = self.out_txt.get('1.0', 'end-1c')
         res = self.ctl.add_item(old, hit.code, word=word)
         self._apply_added(old, res.text, res.line)
@@ -715,6 +871,33 @@ class App:
             self._show_learned(word)
         else:
             self._ask_learning(res.code, res.candidates)
+
+    def _bind_word(self, word: str, code: str):
+        """«Добавить пункт» к слову записи: слово — токен и слово врача в словаре;
+        строка в протокол не вставляется, ничего не копируется."""
+        t = self.raw_txt
+        r = t.tag_ranges('unknown')
+        span = next(((r[i], r[i + 1]) for i in range(0, len(r), 2)
+                     if t.get(r[i], r[i + 1]) == word), None)
+        if span is None:
+            at = t.search(word, '1.0', 'end')
+            span = (at, f'{at}+{len(word)}c') if at else None
+        status = self.ctl.bind_word(word, code)
+        self._close_add()
+        if span:
+            t.tag_remove('unknown', *span)
+            item = self.ctl.workbook.by_id[code]
+            group = self.ctl.workbook.by_id.get(item.parent) if item.level == 3 and not item.orphan else None
+            from .addition import row_text
+            self.bind_token(span[0], span[1], code, row_text(item, group))
+        self._show_file_status()
+        self._live()                    # врач выбрал пункт — протокол сразу, без паузы
+        d = getattr(self, '_last_draft', None)
+        if not self.live_frozen and d is not None:
+            self._status(status, d.warnings, d.defaults_line, rows=d.rows)
+        else:
+            self._status(status)
+        self._show_learned(word)        # после статуса — «Отменить» остаётся
 
     def _apply_added(self, old: str, new: str, line: int):
         """Вставить/заменить строки в поле, не трогая остальной текст и его теги."""
@@ -742,7 +925,7 @@ class App:
         t.tag_add('added', f'{line + 1}.0', f'{line + 1}.end')
         t.see(f'{line + 1}.0')
         self.root.after(3000, lambda: t.tag_remove('added', '1.0', 'end'))
-        self.ctl._last_shown = new
+        self.live_frozen, self._live_kept = True, False   # добавленная строка — правка протокола
 
     # ---------- вопрос «каким словом» ----------
     def learn_text(self) -> str:
@@ -866,7 +1049,15 @@ class App:
             self.ctl.skip_learning(self._learn_code)
         self._hide_learning()
 
+    def _draft_unconfirmed(self) -> bool:
+        """Справа черновик записи, которую ещё не подтверждали (Ctrl+Enter)."""
+        raw = self.raw_txt.get('1.0', 'end-1c').strip()
+        return bool(raw) and raw != (self.ctl._last_raw or '').strip()
+
     def copy(self):
+        if self._draft_unconfirmed():       # «Копировать» черновика = подтвердить
+            self.generate()
+            return
         text = self.out_txt.get('1.0', 'end-1c').strip()
         if text:
             status = self.ctl.copy(text)
@@ -876,8 +1067,8 @@ class App:
                 self._status(status)
 
     def mark_case(self):
-        if self.ctl.last_protocol is None:
-            self._status('Сначала сформируйте протокол')
+        if self.ctl.last_protocol is None or self._draft_unconfirmed():
+            self._status('Сначала подтвердите протокол — Ctrl+Enter')
             return
         MarkCaseDialog(self, self.raw_txt.get('1.0', 'end-1c').strip(),
                        self.out_txt.get('1.0', 'end-1c').strip())
@@ -998,8 +1189,20 @@ class App:
         self._protocol_menu(self.out_txt.index(f'@{e.x},{e.y}')).tk_popup(e.x_root, e.y_root)
         return 'break'
 
+    def _after_preset_change(self):
+        """Пресет загружен заново (импорт, сохранение): токены — от прежнего, черновик
+        — пересобрать (иначе пустой «показанный» протокол выглядит как ручная правка)."""
+        self._cancel_live()
+        self._clear_tokens()
+        if self.raw_txt.get('1.0', 'end-1c').strip() and not self.live_frozen:
+            self._live_show()
+        elif not self.live_frozen:
+            self.ctl.confirm_shown(self.out_txt.get('1.0', 'end-1c'))
+
     def after_preset_saved(self, preset_id: int, status: str):
         """Редактор сохранил пресет: статус, и протокол пересобран без копирования."""
+        self._cancel_live()
+        self._clear_tokens()
         self._show_file_status()
         raw = self.raw_txt.get('1.0', 'end-1c').strip()
         out = self.out_txt.get('1.0', 'end-1c')
@@ -1009,7 +1212,8 @@ class App:
             self._status(f'{status}. Протокол правили вручную — Ctrl+Enter пересоберёт его '
                          f'по изменённому пресету')
         else:
-            self._regenerate_silently(raw, f'{status} — протокол пересобран; в буфере прежний')
+            self._regenerate_silently(raw, f'{status} — протокол пересобран (черновик); '
+                                           f'Ctrl+Enter — подтвердить')
 
     def open_editor(self, select: str | None = None):
         """Редактор пресета — одно окно на программу."""

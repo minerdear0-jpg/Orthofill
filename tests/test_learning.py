@@ -7,7 +7,8 @@ def test_add_learn_then_recognized(ctl, clip, order_xlsx):
     r = ctl.generate(raw)
     assert [w for *_, w in ctl.find_unknown()] == ["квакозябра"]
     res = ctl.add_item(r.text, "4g3")
-    assert "Юстировка дуги: Изгиб третьего порядка." in res.text and clip[-1] == res.text
+    assert "Юстировка дуги: Изгиб третьего порядка." in res.text
+    assert clip[-1] != res.text                 # 0.3: в буфер — только Ctrl+Enter
     assert res.candidates == ["квакозябра"] and res.learned is None
     assert ctl.learn("квакозябра", "4g3") == "Запомнено: «квакозябра» → Юстировка дуги: Изгиб третьего порядка."
     ctl.generate(raw)

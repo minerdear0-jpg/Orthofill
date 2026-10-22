@@ -121,7 +121,8 @@ class HintBox:
             tk.Label(row, text=_KIND[hint.kind], font=app.f_small, fg='#8a95a1',
                      bg=bg).pack(side='right', padx=(8, 6))
             if hint.becomes:
-                tk.Label(row, text=f'→ {hint.becomes[:48]}', font=app.f_small, fg='#5f6b76',
+                becomes = hint.becomes if len(hint.becomes) <= 80 else hint.becomes[:79] + '…'
+                tk.Label(row, text=f'→ {becomes}', font=app.f_small, fg='#5f6b76',
                          bg=bg).pack(side='left', padx=(10, 0))
             for w in (row, *row.winfo_children()):
                 w.bind('<Button-1>', lambda e, k=i: self.accept(k))
@@ -159,7 +160,10 @@ class HintBox:
         t.configure(autoseparators=False)   # одна отмена возвращает набранное
         t.edit_separator()
         t.delete(f'insert -{len(self.prefix)}c', 'insert')
-        t.insert('insert', hint.word)
+        start = t.index('insert')
+        t.insert('insert', hint.word, ())
+        if hint.code:                       # слово с известным пунктом — токен
+            self.app.bind_token(start, t.index('insert'), hint.code, hint.becomes)
         t.edit_separator()
         t.configure(autoseparators=True)
         self.close()
@@ -226,9 +230,12 @@ class HintBox:
             self.close()
 
     def _on_resize(self, e):
+        """Окно изменило размер (в т.ч. от живого протокола) — подсказку не
+        закрывать, а поставить под курсор заново, когда раскладка уляжется."""
         if e.widget is not self.app.root:
             return
         size = (e.width, e.height)
         if size != self._size:
             self._size = size
-            self.close()
+            if self.items:
+                self.app.root.after_idle(lambda: self.items and self._show())
