@@ -64,12 +64,26 @@ def ctl(tmp_path, clip):
     return Controller(Journal(tmp_path / "j.db"), clip.append)
 
 
+def _tk():
+    """tk.Tk() с повтором: на Windows создание окна изредка не может прочитать свой
+    файл Tcl (временная блокировка — например, антивирус при частом открытии)."""
+    import time
+    import tkinter as tk
+    for attempt in range(3):
+        try:
+            return tk.Tk()
+        except tk.TclError:
+            if attempt == 2:
+                raise
+            time.sleep(0.5)
+
+
 def _make_app(tmp_path, *paths):
     import tkinter as tk
     from orthofill.controller import Controller
     from orthofill.journal import Journal
     from orthofill.ui import App
-    root = tk.Tk()
+    root = _tk()
     ctl = Controller(Journal(tmp_path / "j.db"), clipboard=lambda t: None)
     a = App(root, ctl)
     # живой протокол — только в своих тестах (test_live_ui задаёт задержку сам):
