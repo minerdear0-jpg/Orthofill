@@ -15,6 +15,7 @@ from .engine import Protocol, build_protocol, check_references, rule_warnings
 from .parse import extract_facts
 from .vocab import signature, unknown_words
 from .addition import SearchHit, insert_item, row_text, search_items
+from .draft import Draft
 from .journal import Journal
 from .lint import LEVEL_LABELS, lint
 from .presets import PresetStore
@@ -82,6 +83,7 @@ class Controller:
         self.workbook: Workbook | None = None
         self.file_status = NO_PRESETS
         self.details: list[str] = []
+        self.draft: Draft | None = None
         self.last_protocol: Protocol | None = None
         self.last_entry_id: int | None = None
         self._last_shown = ''      # текст, выданный программой или уже скопированный
@@ -368,6 +370,39 @@ class Controller:
     def skip_learning(self, code: str) -> None:
         self._log('learn_skip', code=code, raw=self._last_raw, preset=self._preset_ref())
 
+    # ---------- редактор пресета ----------
+    def open_draft(self, preset_id: int | None = None) -> Draft:
+        """Черновик пресета для редактора — один на программу."""
+        pid = self.preset_id if preset_id is None else preset_id
+        if self.draft is None or self.draft.preset_id != pid:
+            self.draft = Draft(self.presets.load(pid), pid)
+        return self.draft
+
+    def editing_unsaved(self, preset_id: int | None) -> bool:
+        d = self.draft
+        return d is not None and d.preset_id == preset_id and d.changed > 0
+
+    def save_draft(self) -> str:
+        d = self.draft
+        before = self.presets.load(d.preset_id)
+        codes = _composed_codes(d.ops, [it.id for it in before.items])
+        old = {codes[it.id]: it for it in before.items if codes[it.id] is not None}
+        new = d.wb.by_id
+        added = sum(c not in old for c in new)
+        deleted = sum(c not in new for c in old)
+        changed = sum(1 for c, it in old.items() if c in new and
+                      (it.text, it.method, it.when, it.default, it.words) !=
+                      (new[c].text, new[c].method, new[c].when, new[c].default, new[c].words))
+        self.presets.save_draft(d.preset_id, d)
+        results = check_references(d.wb)
+        ok = sum(r.ok for r in results)
+        self._log('preset_saved', preset=d.preset_id, added=added, deleted=deleted,
+                  changed=changed, codes={o: n for o, n in codes.items() if n and n != o},
+                  refs_ok=ok, refs_total=len(results))
+        if d.preset_id == self.preset_id:
+            self._reload()
+        return f'Пресет «{d.wb.name}» сохранён · эталоны {ok}/{len(results)}'
+
     def _reload(self) -> None:
         self.workbook = self.presets.load(self.preset_id)
         self.journal.snapshot(self.workbook)
@@ -428,3 +463,14 @@ class Controller:
         self.journal.snapshot(self.workbook)
         self._refresh_status()
         return f'Эталон {case_id} сохранён в пресет «{wb.name}»'
+
+
+def _composed_codes(ops, codes: list[str]) -> dict[str, str | None]:
+    """Прежний код → итоговый после всех смен кодов черновика (None — удалён)."""
+    cur: dict[str, str | None] = {c: c for c in codes}
+    for op in ops:
+        if op[0] == 'codes':
+            cur = {o: (op[1].get(n, n) if n else None) for o, n in cur.items()}
+        elif op[0] == 'del_item':
+            cur = {o: (None if n in op[1] else n) for o, n in cur.items()}
+    return cur

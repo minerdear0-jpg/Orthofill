@@ -67,23 +67,49 @@ class PresetStore:
         """Пишутся только явно заданные свойства; угаданные — None (их угадывает
         build_protocol по текущим эталонам)."""
         db = self._db
-        for table in ('preset_items', 'reference_cases', 'reference_lines'):
-            db.execute(f'DELETE FROM {table} WHERE preset_id=?', (pid,))
         if not keep_dictionary:
             db.execute('DELETE FROM dictionary WHERE preset_id=?', (pid,))
-        for pos, it in enumerate(wb.items):
-            db.execute('INSERT INTO preset_items VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                       (pid, pos, it.id, it.text, it.level, it.parent, int(it.orphan),
-                        it.method, it.when, it.default,
-                        json.dumps(it.words, ensure_ascii=False) if it.words else None))
-        for pos, case in enumerate(wb.references):
-            self._insert_case(pid, pos, case.case_id, case.raw, case.lines)
-        for e in wb.dictionary:
-            db.execute('INSERT OR REPLACE INTO dictionary VALUES (?,?,?,?,?,?)',
-                       (pid, e.word, e.item_text, e.code, e.added or _now(), e.hits))
+        self._write_items(pid, wb.items)
+        self._write_references(pid, wb.references)
+        self._write_dictionary(pid, wb.dictionary)
         db.execute('INSERT INTO imports (preset_id, at, file_name, sha256, items, references_)'
                    ' VALUES (?,?,?,?,?,?)',
                    (pid, _now(), wb.source, wb.sha256, len(wb.items), len(wb.references)))
+
+    def _write_items(self, pid: int, items) -> None:
+        self._db.execute('DELETE FROM preset_items WHERE preset_id=?', (pid,))
+        for pos, it in enumerate(items):
+            self._db.execute('INSERT INTO preset_items VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                             (pid, pos, it.id, it.text, it.level, it.parent, int(it.orphan),
+                              it.method, it.when, it.default,
+                              json.dumps(it.words, ensure_ascii=False) if it.words else None))
+
+    def _write_references(self, pid: int, references) -> None:
+        for table in ('reference_cases', 'reference_lines'):
+            self._db.execute(f'DELETE FROM {table} WHERE preset_id=?', (pid,))
+        for pos, case in enumerate(references):
+            self._insert_case(pid, pos, case.case_id, case.raw, case.lines)
+
+    def _write_dictionary(self, pid: int, dictionary) -> None:
+        for e in dictionary:
+            self._db.execute('INSERT OR REPLACE INTO dictionary VALUES (?,?,?,?,?,?)',
+                             (pid, e.word, e.item_text, e.code, e.added or _now(), e.hits))
+
+    # ---------- редактор ----------
+    def save_draft(self, preset_id: int, draft) -> None:
+        """Пункты — из черновика; эталоны и словарь — текущие из базы (главное
+        окно могло их пополнить) с повтором правок черновика. Одна транзакция;
+        в журнал импортов не пишется; пресет — «есть то, чего нет в xlsx»."""
+        refs, words = draft.replay(self._load_references(preset_id),
+                                   self._load_dictionary(preset_id))
+        with self._db:
+            self._write_items(preset_id, draft.wb.items)
+            self._write_references(preset_id, refs)
+            self._db.execute('DELETE FROM dictionary WHERE preset_id=?', (preset_id,))
+            self._write_dictionary(preset_id, words)
+            self._db.execute('UPDATE presets SET dirty=1 WHERE id=?', (preset_id,))
+        draft.wb.references, draft.wb.dictionary = refs, words
+        draft.mark_saved()
 
     def _insert_case(self, pid, pos, case_id, raw, lines) -> None:
         self._db.execute('INSERT INTO reference_cases VALUES (?,?,?,?)', (pid, pos, case_id, raw))
@@ -106,16 +132,8 @@ class PresetStore:
         for it in items:
             if it.parent in by_id:
                 by_id[it.parent].children.append(it)
-        refs = []
-        for case_id, raw in db.execute('SELECT case_id, raw FROM reference_cases'
-                                       ' WHERE preset_id=? ORDER BY pos', (preset_id,)).fetchall():
-            lines = [(c or '', t) for c, t in db.execute(
-                'SELECT code, text FROM reference_lines WHERE preset_id=? AND case_id=?'
-                ' ORDER BY pos', (preset_id, case_id))]
-            refs.append(ReferenceCase(case_id, raw or '', lines))
-        dictionary = [DictEntry(w, t, c or '', a or '', h) for w, t, c, a, h in db.execute(
-            'SELECT word, item_text, code, added, hits FROM dictionary WHERE preset_id=?'
-            ' ORDER BY word', (preset_id,))]
+        refs = self._load_references(preset_id)
+        dictionary = self._load_dictionary(preset_id)
         content = json.dumps(
             {'items': [[i.id, i.text, i.method, i.when, i.default, i.words] for i in items],
              'references': [[r.case_id, r.raw, r.lines] for r in refs]}, ensure_ascii=False)
@@ -126,6 +144,22 @@ class PresetStore:
                       name=name, source=source or '', dictionary=dictionary)
         normalize_references(wb)          # эталоны, сохранённые в 0.2 beta 1
         return wb
+
+    def _load_references(self, preset_id: int) -> list[ReferenceCase]:
+        db = self._db
+        refs = []
+        for case_id, raw in db.execute('SELECT case_id, raw FROM reference_cases'
+                                       ' WHERE preset_id=? ORDER BY pos', (preset_id,)).fetchall():
+            lines = [(c or '', t) for c, t in db.execute(
+                'SELECT code, text FROM reference_lines WHERE preset_id=? AND case_id=?'
+                ' ORDER BY pos', (preset_id, case_id))]
+            refs.append(ReferenceCase(case_id, raw or '', lines))
+        return refs
+
+    def _load_dictionary(self, preset_id: int) -> list[DictEntry]:
+        return [DictEntry(w, t, c or '', a or '', h) for w, t, c, a, h in self._db.execute(
+            'SELECT word, item_text, code, added, hits FROM dictionary WHERE preset_id=?'
+            ' ORDER BY word', (preset_id,))]
 
     # ---------- эталоны, выгрузка ----------
     def add_reference(self, preset_id: int, raw: str, lines: list[tuple[str, str]]) -> str:
