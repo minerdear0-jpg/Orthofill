@@ -74,3 +74,61 @@ def test_done_path_restricts(wb):
 def test_empty_typed_lists_children(wb):
     r = resolve(wb, ('4', '4f'), '', {})
     assert [p[-1] for p in r.choices][:3] == ['4f1', '4f2', '4f3'] and r.bad_word is None
+
+
+# ---------- 0.5 b4: ввод как угодно ----------
+CUNITI = {'4b9', '4b10', '4b11', '4b12', '4b13'}
+
+
+@pytest.mark.parametrize('typed', ['кунити', 'CuNiTi', 'cuniti', 'cu ni ti', 'cu niti', 'ку нити'])
+def test_cuniti_all_spellings(wb, typed):
+    assert {p[-1] for p in resolve(wb, ('4', '4b'), typed, {}).leaves} == CUNITI
+
+
+def test_size_and_material(wb):
+    assert [p[-1] for p in resolve(wb, ('4', '4b'), '16х25 кунити', {}).leaves] == ['4b10']
+    assert [p[-1] for p in resolve(wb, ('4', '4b'), '.016*.025 тма', {}).leaves] == ['4b14']
+    assert [p[-1] for p in resolve(wb, ('4', '4b'), '16х25 сс', {}).leaves] == ['4b18']
+
+
+def test_niti_not_cuniti(wb):
+    assert {p[-1] for p in resolve(wb, ('4', '4b'), '16х25 нити', {}).leaves} == {'4b5'}
+    assert {p[-1] for p in resolve(wb, ('4', '4b'), 'ni-ti 16х25', {}).leaves} == {'4b5'}
+
+
+def test_glued_and_split(wb):
+    assert resolve(wb, (), 'фото протокол', {}).common[-1] == '4j'
+    assert resolve(wb, (), 'само лиг', {}).common[-1] == '2b1'      # склейка начала слова
+
+
+def test_layout_swap_fallback(wb):
+    assert resolve(wb, (), 'kbufnehyfz', {}).common[-1] == '2b2'
+
+
+def test_layout_only_when_no_match(wb):
+    """«tma» совпадает как набрано — другая раскладка («ещф») не подмешивается."""
+    r = resolve(wb, ('4', '4b'), 'tma', {})
+    assert {p[-1] for p in r.leaves} == {'4b14', '4b15', '4b16', '4b17'}
+
+
+def test_numbers_not_glued(wb):
+    a = {p[-1] for p in resolve(wb, ('4', '4b'), '16х25', {}).leaves}
+    assert a == {'4b5', '4b10', '4b14', '4b18'}
+    assert {p[-1] for p in resolve(wb, ('4', '4b'), '16 25', {}).leaves} >= a
+
+
+def test_comma_mode_untouched(wb):
+    from orthofill.engine import build_protocol
+    assert [c for c, _ in build_protocol(wb, 'т.к. боль, лигатурная, перепел').lines]
+
+
+def test_synonym_any_spelling(wb):
+    assert resolve(wb, (), 'TORK', {'торк': '4g3'}).common[-1] == '4g3'
+
+
+def test_resolve_fast_with_canon(wb):
+    import time
+    t0 = time.perf_counter()
+    for _ in range(200):
+        resolve(wb, (), 'ду вер 16х25 кунити', {})
+    assert time.perf_counter() - t0 < 1.0
