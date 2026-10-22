@@ -38,9 +38,9 @@ class HintIndex:
     def __init__(self, entries: list[Hint]):
         self.entries = entries          # уже по порядку: словарь → история → пункты
 
-    def suggest(self, prefix: str, limit: int = 7) -> list[Hint]:
+    def suggest(self, prefix: str, limit: int = 7, min_len: int = MIN_PREFIX) -> list[Hint]:
         p = _key(prefix.strip())
-        if len(p) < MIN_PREFIX or not _WORD.fullmatch(p):
+        if len(p) < min_len or not _WORD.fullmatch(p):
             return []
         out = self._find(p, limit)
         if not out and re.search(r'[a-z]', p):          # набрано в английской раскладке

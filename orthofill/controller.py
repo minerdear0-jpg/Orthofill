@@ -378,7 +378,7 @@ class Controller:
         self._log('learn_skip', code=code, raw=self._last_raw, preset=self._preset_ref())
 
     # ---------- подсказки ----------
-    def hints(self, prefix: str) -> list:
+    def hints(self, prefix: str, force: bool = False) -> list:
         """Подсказки к началу слова. Индекс — один на пресет, его словарь и журнал."""
         from .hints import build_index
         wb = self.workbook
@@ -389,7 +389,7 @@ class Controller:
         if getattr(self, '_hint_key', None) != key:
             self._hint_index = build_index(wb, self.journal.raw_words(self.preset_id))
             self._hint_key = key
-        return self._hint_index.suggest(prefix)
+        return self._hint_index.suggest(prefix, min_len=1 if force else 3)
 
     # ---------- редактор пресета ----------
     def open_draft(self, preset_id: int | None = None) -> Draft:

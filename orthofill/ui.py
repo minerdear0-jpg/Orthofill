@@ -123,12 +123,15 @@ class App:
         self.topmost = tk.BooleanVar(value=self.ctl.journal.get_setting('topmost') == '1')
         topmost_cb = ttk.Checkbutton(right, text='Поверх окон', variable=self.topmost,
                                      command=self._apply_topmost)
+        self.hints_on = tk.BooleanVar(value=self.ctl.journal.get_setting('hints', '1') == '1')
+        hints_cb = ttk.Checkbutton(right, text='Подсказки', variable=self.hints_on,
+                                   command=self._toggle_hints)
         self.diag_var = tk.BooleanVar(value=False)
         diag_cb = ttk.Checkbutton(right, text='Диагностика', variable=self.diag_var,
                                   command=self._toggle_diag)
         self.diag_btn = ttk.Button(right, text='Папка', command=self.open_diag_folder)
         # широко — в ряд; узко — сеткой 2×2 (см. _relayout)
-        self.bar_widgets = [self.details_btn, topmost_cb, diag_cb, self.diag_btn]
+        self.bar_widgets = [self.details_btn, topmost_cb, hints_cb, diag_cb, self.diag_btn]
         self._apply_topmost()
 
         # Ввод и протокол
@@ -155,6 +158,8 @@ class App:
         self.raw_txt.tag_bind('unknown', '<Button-1>', self._on_unknown_click)
         self.raw_txt.bind('<KeyRelease>', self._unmark_unknown, add='+')
         f.pack(fill='both', expand=True)
+        from .hintbox import HintBox
+        self.hint_box = HintBox(self, self.raw_txt)
 
         self.out_panel = ttk.Frame(self.body)
         ttk.Label(self.out_panel, text='ПРОТОКОЛ (МОЖНО ПРАВИТЬ)', font=self.f_label,
@@ -590,6 +595,7 @@ class App:
                      f'в буфере прежний — нажмите «Копировать»')
 
     def generate(self):
+        self.hint_box.close()
         current = self.out_txt.get('1.0', 'end-1c')
         if self.ctl.needs_confirm_regenerate(current) and not messagebox.askyesno(
                 TITLE, 'Заменить исправленный протокол новым?', icon='warning'):
@@ -982,6 +988,10 @@ class App:
         else:
             import subprocess
             subprocess.Popen(['xdg-open', str(d)])
+
+    def _toggle_hints(self):
+        self.ctl.journal.set_setting('hints', '1' if self.hints_on.get() else '0')
+        self.hint_box.close()
 
     def _apply_topmost(self):
         self.root.attributes('-topmost', self.topmost.get())
