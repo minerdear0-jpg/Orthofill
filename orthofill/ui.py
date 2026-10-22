@@ -61,6 +61,7 @@ class App:
         self.live_frozen = False        # протокол поправлен руками — живое обновление стоит
         self._live_kept = False         # «Оставить» — полоска больше не всплывает
         self.mode: str | None = None
+        self.shell_view = 'input'       # оболочка: input · drawer (F2) · review (Ctrl+Enter)
         self._setup_fonts()
         self._build()
         self._bind_keys()
@@ -185,6 +186,8 @@ class App:
         self.note_stats = NoteStats()
 
         self.out_panel = ttk.Frame(self.body)
+        self.drawer_btn = ttk.Button(self.body, text='Протокол ◂ F2', style='Toolbutton',
+                                     command=self._toggle_drawer)
         ttk.Label(self.out_panel, text='ПРОТОКОЛ (МОЖНО ПРАВИТЬ)', font=self.f_label,
                   foreground=MUTED).pack(anchor='w', pady=(0, 3))
         # «Добавить пункт»: поиск по пресету, список — в той же панели (без всплывающих окон)
@@ -347,6 +350,12 @@ class App:
         for i in range(2):
             b.columnconfigure(i, weight=0)
             b.rowconfigure(i, weight=0)
+        if self.ctl.shell_mode and hasattr(self, 'drawer_btn'):
+            self._layout_shell()
+            return
+        if hasattr(self, 'drawer_btn'):
+            self.drawer_btn.place_forget()
+            self.out_panel.place_forget()
         if mode == 'wide':
             self.in_panel.grid(row=0, column=0, sticky='nsew', padx=(0, 12))
             self.out_panel.grid(row=0, column=1, sticky='nsew')
@@ -359,6 +368,73 @@ class App:
             b.columnconfigure(0, weight=1)
             b.rowconfigure(0, weight=1)
             b.rowconfigure(1, weight=3)
+
+    # ---------- раскладка оболочки (0.5 b5) ----------
+    def _layout_shell(self):
+        """Тело окна в режиме оболочки: запись на всю ширину; протокол — поверх
+        справа (drawer, F2) или второй колонкой (review, после Ctrl+Enter)."""
+        b = self.body
+        self.out_panel.configure(relief='flat', borderwidth=0, padding=0)
+        for p in (self.in_panel, self.out_panel):
+            p.grid_forget()
+            p.place_forget()
+        for i in range(2):
+            b.columnconfigure(i, weight=0)
+            b.rowconfigure(i, weight=0)
+        narrow = self.mode == 'narrow'
+        if self.shell_view == 'review':
+            split = int(REVIEW_SPLIT * 100)
+            if narrow:
+                self.in_panel.grid(row=0, column=0, sticky='nsew', pady=(0, 10))
+                self.out_panel.grid(row=1, column=0, sticky='nsew')
+                b.columnconfigure(0, weight=1)
+                b.rowconfigure(0, weight=1)
+                b.rowconfigure(1, weight=2)
+            else:
+                self.in_panel.grid(row=0, column=0, sticky='nsew', padx=(0, 12))
+                self.out_panel.grid(row=0, column=1, sticky='nsew')
+                b.columnconfigure(0, weight=split, uniform='rv')
+                b.columnconfigure(1, weight=100 - split, uniform='rv')
+                b.rowconfigure(0, weight=1)
+            self.drawer_btn.place_forget()
+            return
+        self.in_panel.grid(row=0, column=0, sticky='nsew')
+        b.columnconfigure(0, weight=1)
+        b.rowconfigure(0, weight=1)
+        if self.shell_view == 'drawer':
+            w = 1.0 if narrow else DRAWER_W
+            self.out_panel.configure(relief='solid', borderwidth=1, padding=(10, 4, 4, 4))
+            self.out_panel.place(in_=b, relx=1 - w, rely=0, relwidth=w, relheight=1)
+            self.out_panel.lift()
+            self.drawer_btn.configure(text='Протокол ▸ F2')
+        else:
+            self.drawer_btn.configure(text='Протокол ◂ F2')
+        self.drawer_btn.place(in_=b, relx=1.0, rely=0, anchor='ne')
+        self.drawer_btn.lift()
+
+    def set_shell_view(self, view: str):
+        if view == self.shell_view:
+            return
+        self.shell_view = view
+        events = {'drawer': 'drawer_open', 'review': 'review_open'}
+        self.ctl.track('ui', name=events.get(view, 'drawer_close' if view == 'input' else view))
+        if self.ctl.shell_mode:
+            self._layout_shell()
+
+    def _toggle_drawer(self, e=None):
+        if not self.ctl.shell_mode:
+            return None
+        self.set_shell_view('input' if self.shell_view in ('drawer', 'review') else 'drawer')
+        self.raw_txt.focus_set()
+        return 'break'
+
+    def _escape_view(self, e=None):
+        """Esc: закрыть панель или проверку (после того как оболочка закрыла свой список)."""
+        if self.ctl.shell_mode and self.shell_view != 'input':
+            self.set_shell_view('input')
+            self.raw_txt.focus_set()
+            return 'break'
+        return None
 
     def _on_resize(self, e):
         if e.widget is self.root:
@@ -373,6 +449,9 @@ class App:
             for seq in ('<Control-Return>', '<Control-KP_Enter>'):
                 w.bind(seq, lambda e: (self.generate('ctrl_enter'), 'break')[1])
         self.root.bind_all('<Control-KeyPress>', self._on_ctrl_key, add='+')
+        self.root.bind_all('<F2>', self._toggle_drawer, add='+')
+        self.raw_txt.bind('<Escape>', self._escape_view, add='+')
+        self.out_txt.bind('<Escape>', self._escape_view, add='+')
         for seq in ('<KeyPress-Control_L>', '<KeyPress-Control_R>'):
             self.root.bind_all(seq, self._noop_snap, add='+')
         self.raw_txt.bind('<KeyPress>', self._note_key, add='+')
@@ -1630,6 +1709,9 @@ class App:
         self.hint_box.close()
         self.shell_box.close()
         self._reset_canvas()
+        self.shell_view = 'input'
+        mode, self.mode = self.mode, None           # раскладка — заново под режим
+        self._relayout(mode or 'wide')
         self.shell_box.update()
         self._schedule_live()
 
@@ -1651,6 +1733,10 @@ def _preset_about(ctl: Controller) -> str:
     info = next((p for p in ctl.presets.list() if p.id == ctl.preset_id), None)
     when = f', импорт {info.imported_at[:10]}' if info and info.imported_at else ''
     return f'{wb.name} (из {wb.source or "—"}{when})'
+
+
+DRAWER_W = 0.46        # выдвижная панель протокола — доля ширины тела окна
+REVIEW_SPLIT = 0.55    # проверка после Ctrl+Enter: доля записи
 
 
 def main_thread_gc(root: tk.Tk, every_ms: int = 10_000) -> None:
