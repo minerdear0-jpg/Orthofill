@@ -46,6 +46,7 @@ $common = @('--noconfirm', '--clean', '--windowed', '--paths', '.',
             '--icon', 'assets\orthofill.ico',
             '--add-data', 'assets\orthofill.ico;assets',
             '--add-data', 'CHANGELOG.md;.',      # «О программе» → «Что нового»
+            '--add-data', 'orthofill\names_ru.txt;orthofill',   # вырезание ФИО
             '--collect-data', 'sv_ttk')
 
 try {
