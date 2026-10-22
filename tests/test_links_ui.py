@@ -107,3 +107,26 @@ def test_comma_mode_no_gutters(app):
     app.root.update()
     g = app.gutters
     assert not g.in_gutter.winfo_ismapped() and not g.out_gutter.winfo_ismapped()
+
+
+def test_gutter_not_misaligned_after_protocol_edit(sh):
+    _note(sh, ('2', '2b', '2b2'), ('4', '4b', '4b5'))
+    t = sh.out_txt
+    n = _line_of(sh, 'Тип системы')
+    t.focus_force()                                  # врач пишет в протоколе
+    sh.root.update()
+    t.insert(f'{n}.0', 'Своя строка\n')
+    t.event_generate('<KeyRelease>', keysym='Return', when='now')
+    sh.root.update()
+    g = sh.gutters
+    right = _chips(g.out_gutter)
+    for num, marks in right.items():                 # кружок — только у своей строки
+        line = 'Тип системы' if num == 1 else 'Смена дуги'
+        k = _line_of(sh, line)
+        if t.dlineinfo(f'{k}.0'):
+            assert all(abs(y - _y_of(t, k)) <= 2 for y, _ in marks)
+    y = int(_y_of(t, _line_of(sh, 'Тип системы')))
+    sh.raw_txt.mark_set('insert', '2.0')
+    g.out_gutter.event_generate('<Button-1>', x=10, y=y, when='now')
+    sh.root.update()
+    assert sh.raw_txt.index('insert').split('.')[0] == '1'

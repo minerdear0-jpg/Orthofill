@@ -6,6 +6,7 @@
 полями: текст протокола не меняется (копирование и холст 0.5 b3 не задеты)."""
 from __future__ import annotations
 
+import difflib
 import tkinter as tk
 
 from .links import chip_color, note_lines, row_sources
@@ -21,6 +22,7 @@ class Gutters:
         self.out_gutter = self._canvas(app.out_txt, OUT_W)
         self._note: dict[int, str] = {}
         self._sources: list[tuple[list[int], str]] = []
+        self._at: dict[int, tuple[list[int], str]] = {}   # строка поля протокола → источник
         self._job = None
         self.shown = False
         for txt in (app.raw_txt, app.out_txt):
@@ -28,6 +30,8 @@ class Gutters:
             txt.bind('<Configure>', lambda e: self.draw(), add='+')
         app.raw_txt.bind('<KeyRelease>', lambda e: self.schedule(), add='+')
         app.raw_txt.bind('<ButtonRelease-1>', lambda e: self.draw(), add='+')
+        # врач правит протокол: строки сдвигаются — сопоставить заново по тексту
+        app.out_txt.bind('<KeyRelease>', lambda e: self._remap(), add='+')
         self.out_gutter.bind('<Button-1>', self._click_out)
         self.in_gutter.bind('<Button-1>', self._click_in)
 
@@ -77,6 +81,20 @@ class Gutters:
         self._note = note_lines(wb, app.raw_txt.get('1.0', 'end-1c'))
         lines = app._canvas_lines if app._canvas_active else []
         self._sources = row_sources(wb, lines, self._note) if lines else []
+        self._remap()
+
+    def _remap(self):
+        """Строки холста → строки поля протокола (по совпадению текста): после
+        правок врача номера стоят у своих строк, а не съезжают."""
+        lines = self.app._canvas_lines if self.app._canvas_active else []
+        self._at = {}
+        if lines and self._sources:
+            now = self.app.out_txt.get('1.0', 'end-1c').split('\n')
+            sm = difflib.SequenceMatcher(a=[l.text for l in lines], b=now, autojunk=False)
+            for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                if tag == 'equal' or (tag == 'replace' and i2 - i1 == j2 - j1):
+                    for k in range(i2 - i1):    # правленая строка — на своём месте
+                        self._at[j1 + k + 1] = self._sources[i1 + k]
         self.draw()
 
     # ---------- рисование ----------
@@ -93,7 +111,7 @@ class Gutters:
                 self._chip(c, IN_W // 2, y, n, n == cur)
         c = self.out_gutter
         c.delete('all')
-        for i, (nums, src) in enumerate(self._sources, 1):
+        for i, (nums, src) in self._at.items():
             y = _middle(app.out_txt, i)
             if y is None:
                 continue
@@ -114,8 +132,9 @@ class Gutters:
     # ---------- щелчок ----------
     def _click_out(self, e):
         i = int(self.app.out_txt.index(f'@0,{e.y}').split('.')[0])
-        if 1 <= i <= len(self._sources) and self._sources[i - 1][0]:
-            self.jump(self._sources[i - 1][0][0])
+        nums = self._at.get(i, ([], ''))[0]
+        if nums:
+            self.jump(nums[0])
 
     def _click_in(self, e):
         self.jump(int(self.app.raw_txt.index(f'@0,{e.y}').split('.')[0]))

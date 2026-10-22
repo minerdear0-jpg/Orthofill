@@ -605,6 +605,8 @@ def _select_complaint(section: Item, ctx: _Ctx) -> Item | None:
                 return hit
     if ctx.wb is not None and ctx.wb.star_mode:     # «*»: жалоба по умолчанию — только отмеченная
         default = next((c for c in ch if c.star), None)
+        if default is None and re.search(r'жалоб\w*\s+нет|нет\s+жалоб|без\s+жалоб|не\s+пред[ъь]явл', n):
+            default = _first(ch, lambda t: re.search(r'не\s+пред[ъь]явл', t))   # написано врачом
     else:
         default = _first(ch, lambda t: re.search(r'не\s+пред[ъь]явл', t)) or (ch[0] if ch else None)
     # Новые жалобы ищем только в том, что написано после «жалобы…»,
@@ -831,12 +833,19 @@ def _select_rule_or_default(group: Item, ctx: _Ctx):
     if sel and rule_kind(group) is None:
         ctx.flag(group.id, 'выбрано по словам записи — проверьте')
     if ctx.wb is not None and ctx.wb.star_mode:
-        # «*»: само в отчёт — только отмеченный вариант; правила-умолчания выключены
-        if sel and record:
+        # «*»: само в отчёт — только отмеченный вариант; выключено лишь то, что правило
+        # подставило бы и в пустую запись, молча (без «проверьте») — написанное врачом
+        # остаётся, даже если в нём чего-то не хватает
+        silent = (len(ctx.warnings) == n_warn and len(ctx.flags.get(group.id, [])) == n_flag
+                  and _ids(sel) == _rule_baseline(group, ctx.wb))
+        if sel and (record or not silent):
             _pick(ctx, group, sel, record)
             return sel
         del ctx.defaults[n_def:]
         marked = star_default(group)
+        target = group.default and next((c for c in group.children if c.id == group.default), None)
+        if not marked and target is not None:      # умолчание, выбранное в редакторе
+            marked = [target]
         if not marked:
             if sel is not None and not record and len(ctx.warnings) == n_warn:
                 ctx.flags.pop(group.id, None)
@@ -855,6 +864,28 @@ def _select_rule_or_default(group: Item, ctx: _Ctx):
         return target
     _pick(ctx, group, sel, record)
     return sel
+
+
+def _ids(sel) -> tuple[str, ...]:
+    if sel is None:
+        return ()
+    return tuple(c.id for c in (sel if isinstance(sel, list) else [sel]))
+
+
+_BASELINE: dict = {}
+
+
+def _rule_baseline(group: Item, wb: Workbook) -> tuple[str, ...]:
+    """Что правило группы выбирает на пустой записи (его «по умолчанию»)."""
+    key = (wb.sha256, id(wb), group.id, tuple((c.id, c.text) for c in group.children))
+    if key not in _BASELINE:
+        ctx = _Ctx('', wb)
+        ctx.current = group.id
+        try:
+            _BASELINE[key] = _ids(_select(group, ctx))
+        except Exception:
+            _BASELINE[key] = ()
+    return _BASELINE[key]
 
 
 def _pick(ctx: _Ctx, group: Item, sel, record: bool) -> None:

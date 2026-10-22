@@ -115,3 +115,39 @@ def test_migrate_v4_db_gets_star(tmp_path):
     cols = {r[1] for r in j._db.execute('PRAGMA table_info(preset_items)')}
     assert 'star' in cols
     assert j._db.execute('PRAGMA user_version').fetchone()[0] == 5
+
+
+# ---------- итоговая проверка: звёздочки не съедают написанное врачом ----------
+@pytest.mark.parametrize('note, need', [
+    ('дуга 014 niti', {'4b', '4c'}),
+    ('на в/ч дуга 016', {'4b'}),
+    ('класс 1 по молярам', {'3g', '3h'}),
+    ('изгиб первого 22 брекет', {'4g'}),
+    ('перепел, лиса', {'4f'}),
+    ('явка', {'5d'}),
+    ('явка через 5 недель', {'5d'}),
+    ('смена лигатур', {'4d'}),
+])
+def test_star_mode_keeps_written(order_xlsx, note, need):
+    plain = set(codes(build_protocol(load_workbook_file(order_xlsx), note)))
+    assert need <= plain                     # без звёздочек строка есть
+    wb = _star(order_xlsx, '4j')
+    assert need <= set(codes(build_protocol(wb, note)))
+
+
+def test_star_mode_still_drops_silent_rule_defaults(order_xlsx):
+    wb = _star(order_xlsx, '4j')
+    got = set(codes(build_protocol(wb, 'лигатурная')))
+    assert not got & {'2c', '3f', '3k', '4k', '5d', '1a'}
+
+
+def test_star_mode_explicit_no_complaints(order_xlsx):
+    wb = _star(order_xlsx, '4j')
+    got = codes(build_protocol(wb, 'жалоб нет, лигатурная'))
+    assert '1a' in got
+
+
+def test_star_mode_editor_group_default(order_xlsx):
+    wb = _star(order_xlsx, '4j')
+    wb.by_id['3e'].default = '3e2'
+    assert {'3e', '3e2'} <= set(codes(build_protocol(wb, '')))
