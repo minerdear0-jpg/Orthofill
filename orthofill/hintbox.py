@@ -12,7 +12,10 @@ import tkinter as tk
 import tkinter.font as tkfont
 
 _WORD_END = re.compile(r'[A-Za-zА-Яа-яЁё]+$')
-_KIND = {'doctor': 'ваше слово', 'history': 'из ваших записей', 'item': 'пункт'}
+_KIND = {'doctor': 'ваше слово', 'history': 'из ваших записей', 'item': 'пункт',
+         'phrase': 'фраза', 'value': ''}
+# команда фразы: «.имя» в начале строки или после пробела/запятой («нед.», «0.016» — нет)
+_CMD = re.compile(r'(?:^|(?<=[\s,;]))\.([A-Za-zА-Яа-яЁё0-9]*)$')
 _KEEP = {'Tab', 'Up', 'Down', 'Return', 'KP_Enter', 'Escape', 'Shift_L', 'Shift_R',
          'Control_L', 'Control_R', 'Alt_L', 'Alt_R', 'ISO_Next_Group', 'Caps_Lock'}
 _SEL_BG, _BORDER = '#e3eef7', '#1f5f8b'
@@ -32,6 +35,10 @@ class HintBox:
         self.phrase = ''                # серый хвост привычной фразы ('' — режим слов)
         self._phrase_at = ''            # текст до курсора, к которому этот хвост
         self._reopen = False            # Ctrl+→ взял слово — после отпускания показать остаток
+        self._cmd = False               # подсказки — фразы по «.имя»
+        self.fields: list[tuple[str, str, list[str]]] = []   # поля раскрытой фразы (метки, значения)
+        self.field_i = -1
+        text.tag_configure('field', background='#e3eef7')
         self._view = None
         self._size = None
         bg = text.cget('background')
@@ -55,12 +62,15 @@ class HintBox:
     # ---------- состояние ----------
     @property
     def visible(self) -> bool:
-        return bool(self.items) or bool(self.phrase)
+        return bool(self.items) or bool(self.phrase) or bool(self.fields)
 
     def _enabled(self) -> bool:
         return bool(self.app.hints_on.get())
 
     def close(self):
+        if self.fields:
+            self._end_fields()
+        self._cmd = False
         self.items, self.selected, self.prefix, self._forced = [], -1, '', False
         self.phrase = self._phrase_at = ''
         self._reopen = False
@@ -74,10 +84,24 @@ class HintBox:
         if not self._enabled():
             self.close()
             return
+        if self.fields:                 # внутри раскрытой фразы: только подсветка полей
+            self._refresh_fields()
+            return
         t = self.text
         before = t.get('insert linestart', 'insert')
         after = t.get('insert', 'insert +1c')
         self.phrase = self._phrase_at = ''     # прежний хвост фразы — не тянуть дальше
+        mc = _CMD.search(before)
+        if mc and not (after and after.isalpha()):
+            items = self.app.ctl.phrase_hints(mc.group(1))
+            if items:
+                self.close()
+                self.prefix, self.items, self.selected, self._cmd = '.' + mc.group(1), items, -1, True
+                t.see('insert')
+                t.update_idletasks()
+                self._view = t.yview()
+                self._show()
+                return
         # привычная фраза — только в конце строки (хвост не закрывает текст);
         # Ctrl+Space — явная просьба о словах: фразу пропустить
         if after in ('', '\n') and not force:
@@ -167,7 +191,7 @@ class HintBox:
             self.tail.place(x=x, y=y, bordermode='outside')
         else:
             self.tail.place_forget()
-        if len(self.items) > 1 or not rest:     # без хвоста — список даже из одного:
+        if len(self.items) > 1 or not rest or self._cmd:   # без хвоста (и для фраз) — список:
             self._show_list(x, y, h)            # Tab не меняет текст «вслепую"
         else:
             self.frame.place_forget()
@@ -193,7 +217,9 @@ class HintBox:
                          bg=bg).pack(side='left', padx=(10, 0))
             for w in (row, *row.winfo_children()):
                 w.bind('<Button-1>', lambda e, k=i: self.accept(k))
-        tk.Label(f, text='Tab — принять · ↓ — выбрать · Esc — закрыть', font=app.f_small,
+        foot = ('Tab — следующее поле · ↓ — выбрать · набор — своё · Esc — выйти' if self.fields
+                else 'Tab — принять · ↓ — выбрать · Esc — закрыть')
+        tk.Label(f, text=foot, font=app.f_small,
                  fg='#8a95a1', bg='#ffffff', anchor='w').pack(fill='x', padx=8, pady=(2, 3))
         width = t.winfo_width() if self.app.mode == 'narrow' else min(t.winfo_width(), 520)
         f.update_idletasks()
@@ -212,17 +238,24 @@ class HintBox:
         """Перед курсором всё ещё то начало слова, к которому подсказка
         (курсор могли сдвинуть, текст — отменить или вставить)."""
         t = self.text
-        m = _WORD_END.search(t.get('insert linestart', 'insert'))
+        before = t.get('insert linestart', 'insert')
         after = t.get('insert', 'insert +1c')
+        if self._cmd:
+            return before.endswith(self.prefix) and not (after and after.isalpha())
+        m = _WORD_END.search(before)
         return bool(m) and m.group() == self.prefix and not (after and after.isalpha())
 
     def accept(self, i: int | None = None) -> bool:
+        if self.fields:                     # щелчок по значению поля
+            return self._choose(self.selected if i is None else i)
         if not self.items:
             return False
         if not self._prefix_here():         # подсказка устарела — ничего не трогать
             self.close()
             return False
         hint = self.items[max(self.selected, 0) if i is None else i]
+        if self._cmd:
+            return self._expand(hint)
         t = self.text
         t.configure(autoseparators=False)   # одна отмена возвращает набранное
         t.edit_separator()
@@ -235,6 +268,101 @@ class HintBox:
         t.configure(autoseparators=True)
         self.close()
         return True
+
+    # ---------- раскрытая фраза: поля ----------
+    def _expand(self, hint) -> bool:
+        """«.имя» → текст фразы; поля — между метками (набор остаётся внутри поля)."""
+        from .phrases import field_spans, parse_template, render
+        name = hint.word[1:]
+        ph = next((p for p in self.app.ctl.workbook.phrases if p.name == name), None)
+        if ph is None:
+            self.close()
+            return False
+        parts = parse_template(ph.template)
+        t = self.text
+        t.configure(autoseparators=False)   # одна отмена возвращает «.имя»
+        t.edit_separator()
+        t.delete(f'insert -{len(self.prefix)}c', 'insert')
+        start = t.index('insert')
+        t.insert('insert', render(parts), ())
+        t.edit_separator()
+        t.configure(autoseparators=True)
+        self.close()
+        fields = []
+        for k, (s, e) in enumerate(field_spans(parts)):
+            ms, me = f'fld{k}s', f'fld{k}e'
+            t.mark_set(ms, f'{start}+{s}c')
+            t.mark_gravity(ms, 'left')
+            t.mark_set(me, f'{start}+{e}c')
+            t.mark_gravity(me, 'right')
+            fields.append((ms, me, [v for v in parts if isinstance(v, list)][k]))
+        self.app.ctl.count_phrase_use(name)
+        if fields:
+            self.fields = fields
+            self._refresh_fields()
+            self._activate_field(0)
+        return True
+
+    def _refresh_fields(self):
+        t = self.text
+        t.tag_remove('field', '1.0', 'end')
+        for ms, me, _ in self.fields:
+            t.tag_add('field', ms, me)
+
+    def _activate_field(self, i: int):
+        """Поле i: его текст выделен (набор заменит), список значений — у поля."""
+        from .hints import Hint
+        t = self.text
+        self.field_i = i
+        ms, me, values = self.fields[i]
+        t.tag_remove('sel', '1.0', 'end')
+        t.tag_add('sel', ms, me)
+        t.mark_set('insert', me)
+        self.items = [Hint(v, '', 'value') for v in values]
+        self.selected = -1
+        self._show_field_list()
+
+    def _show_field_list(self):
+        ms = self.fields[self.field_i][0]
+        box = self.text.bbox(ms)
+        self.tail.place_forget()
+        if box is None:
+            self.frame.place_forget()
+            self.list_shown = False
+            return
+        self._show_list(box[0], box[1], box[3])
+
+    def _choose(self, i: int) -> bool:
+        """Выбрать значение текущего поля и перейти к следующему."""
+        if not self.fields or i < 0 or i >= len(self.items):
+            return False
+        t = self.text
+        ms, me, _ = self.fields[self.field_i]
+        t.delete(ms, me)
+        t.insert(ms, self.items[i].word, ())
+        self._next_field()
+        return True
+
+    def _next_field(self):
+        if self.field_i + 1 < len(self.fields):
+            self._activate_field(self.field_i + 1)
+        else:
+            self._end_fields()
+
+    def _end_fields(self):
+        t = self.text
+        t.tag_remove('field', '1.0', 'end')
+        t.tag_remove('sel', '1.0', 'end')
+        for ms, me, _ in self.fields:
+            for m in (ms, me):
+                try:
+                    t.mark_unset(m)
+                except tk.TclError:
+                    pass
+        self.fields, self.field_i = [], -1
+        self.items, self.selected = [], -1
+        self.frame.place_forget()
+        self.list_shown = False
 
     def _on_key_release(self, e):
         if e.keysym in _NAV:
@@ -250,6 +378,9 @@ class HintBox:
     def _tab(self, e):
         if e is not None and e.state & (0x1 | 0x4):      # Shift/Ctrl+Tab — не наше
             return None
+        if self.fields:
+            self._next_field()
+            return 'break'
         if self.phrase:
             return 'break' if self.accept_phrase() else None
         if self.items and (self.list_shown or self.tail.cget('text')) and self.accept():
@@ -259,6 +390,10 @@ class HintBox:
     def _move(self, step: int, e=None):
         if e is not None and e.state & (0x1 | 0x4):      # Shift/Ctrl+стрелки — не наше
             return None
+        if self.fields and self.list_shown:
+            self.selected = max(0, min(len(self.items) - 1, self.selected + step))
+            self._show_field_list()
+            return 'break'
         if not self.list_shown:             # только хвост: стрелка двигает курсор
             self.close()
             return None
@@ -267,6 +402,11 @@ class HintBox:
         return 'break'
 
     def _enter(self, e):
+        if self.fields:
+            if self.selected >= 0 and self._choose(self.selected):
+                return 'break'
+            self._end_fields()
+            return None
         if self.items and self.selected >= 0 and self.accept():
             return 'break'
         self.close()
@@ -289,7 +429,7 @@ class HintBox:
         return None
 
     def _escape(self, e):
-        if self.items or self.phrase:
+        if self.items or self.phrase or self.fields:
             self.close()
             return 'break'
         return None

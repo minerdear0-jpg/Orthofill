@@ -453,6 +453,13 @@ class Controller:
                 for ph in sorted(wb.phrases, key=lambda x: -x.uses)
                 if ph.name.lower().startswith(p)][:7]
 
+    def count_phrase_use(self, name: str) -> None:
+        if self.workbook is not None:
+            self.presets.count_phrase_use(self.preset_id, name)
+            for ph in self.workbook.phrases:
+                if ph.name == name:
+                    ph.uses += 1
+
     def proposal(self, raw: str):
         """Фраза записи, которую врач пишет снова и снова с разными числами —
         (имя, шаблон, сколько раз) — или None."""
