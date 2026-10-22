@@ -298,6 +298,12 @@ class App:
         # вопрос «Каким словом это было в записи?» — не блокирует
         self.learn_bar = ttk.Frame(st)
         # предложение «сделать фразой» (0.3 beta 3) — не блокирует
+        # «Исключено: … — Вернуть» (0.5 b6)
+        self.exclude_bar = ttk.Frame(st)
+        self.exclude_lbl = ttk.Label(self.exclude_bar, text='', wraplength=520, justify='left')
+        self.exclude_lbl.pack(side='left')
+        ttk.Button(self.exclude_bar, text='Вернуть', command=self._undo_exclude).pack(side='right')
+        self._last_exclude = None
         self.phrase_bar = ttk.Frame(st)
         self.phrase_lbl = ttk.Label(self.phrase_bar, text='', wraplength=520, justify='left')
         self.phrase_lbl.pack(side='left')
@@ -1584,8 +1590,25 @@ class App:
         return 'break'
 
     def _protocol_menu(self, index: str) -> tk.Menu:
-        """Меню протокола: работа с текстом и «Изменить … в пресете» для строки."""
+        """Меню протокола: работа с текстом, «Ошибка → Исключить» и «Изменить …
+        в пресете» для строки."""
         menu = self._text_menu(self.out_txt)
+        t = self.out_txt
+        if t.tag_ranges('sel') and t.compare('sel.first', '<=', index) \
+                and t.compare(index, '<=', 'sel.last'):
+            first, last = t.index('sel.first'), t.index('sel.last')
+        else:
+            first, last = f'{index} linestart', f'{index} lineend'
+        rows = self._rows_at(first, last)
+        err = tk.Menu(menu, tearoff=0)
+        err.add_command(label='Исключить — этой строки быть не должно',
+                        command=lambda: self._exclude(first, last),
+                        state='normal' if rows else 'disabled')
+        err.add_command(label='Другое…', command=self.mark_case)
+        self._track_menu(err)
+        self._error_menu = err
+        menu.add_separator()
+        menu.add_cascade(label='Ошибка', menu=err)
         code = self._code_at(index)
         if code:
             text = ' '.join(self.ctl.workbook.by_id[code].text.split())
@@ -1594,6 +1617,81 @@ class App:
                              command=lambda: self.open_editor(code))
         self._track_menu(menu)
         return menu
+
+    # ---------- «Ошибка → Исключить» (0.5 b6) ----------
+    def _rows_at(self, first: str, last: str) -> list[tuple[int, tuple[str, ...], str]]:
+        """Строки протокола между индексами (целиком): (номер, коды, текст); только
+        строки пунктов — свой текст врача, скелет и заголовки разделов — нет."""
+        t = self.out_txt
+        a = int(t.index(first).split('.')[0])
+        b = int(t.index(last).split('.')[0])
+        if self.ctl.shell_mode and self._canvas_lines:
+            rows = [l.row for l in self._canvas_lines if l.kind == 'row' and l.row is not None]
+        else:
+            rows = list(getattr(getattr(self, '_last_draft', None), 'rows', None) or [])
+            if self.ctl.last_protocol is not None:
+                rows += list(self.ctl.last_protocol.rows)
+        by_text = {}
+        for r in rows:
+            if not r.section:
+                by_text.setdefault(' '.join(r.text.split()), r.codes)
+        out = []
+        for n in range(a, b + 1):
+            text = t.get(f'{n}.0', f'{n}.end')
+            codes = by_text.get(' '.join(text.split()))
+            if codes and text.strip():
+                out.append((n, tuple(codes), text))
+        return out
+
+    def _exclude(self, first: str, last: str):
+        """Строки под выделением — вон из протокола; случай — разработчику."""
+        rows = self._rows_at(first, last)
+        if not rows:
+            self._status('Здесь нет строки пункта — исключать нечего')
+            return
+        raw = self.raw_txt.get('1.0', 'end-1c')
+        cid = self.ctl.exclude_case([c for _, c, _ in rows], raw, [x for _, _, x in rows])
+        t = self.out_txt
+        if self.ctl.shell_mode and self._canvas_lines:
+            self._canvas_capture()
+            keys = {'|'.join(c) for _, c, _ in rows}
+            self.ctl.canvas_edits.removed |= keys
+            self._last_exclude = (cid, 'shell', keys)
+            self._live_show()
+        else:
+            removed = [(n, x) for n, _, x in rows]
+            for n, _ in reversed(removed):
+                if t.compare(f'{n}.end', '<', 'end-1c'):
+                    t.delete(f'{n}.0', f'{n + 1}.0')
+                elif n > 1:                          # последняя строка — с переносом перед ней
+                    t.delete(f'{n - 1}.end', f'{n}.end')
+                else:
+                    t.delete(f'{n}.0', f'{n}.end')
+            self._last_exclude = (cid, 'comma', removed)
+        names = '», «'.join(' '.join(x.split())[:40] for _, _, x in rows[:2])
+        more = f' и ещё {len(rows) - 2}' if len(rows) > 2 else ''
+        self.exclude_lbl.configure(text=f'Исключено: «{names}»{more} — случай сохранён')
+        self.exclude_bar.pack(anchor='w', fill='x', pady=(4, 0), after=self.status_lbl.master)
+
+    def _undo_exclude(self):
+        if not self._last_exclude:
+            return
+        cid, mode, data = self._last_exclude
+        self._last_exclude = None
+        if mode == 'shell':
+            self._canvas_capture()
+            self.ctl.canvas_edits.removed -= data
+            self._live_show()
+        else:
+            t = self.out_txt
+            for n, text in data:                    # по возрастанию — номера строк как были
+                lines = int(t.index('end-1c').split('.')[0])
+                if n > lines:
+                    t.insert('end-1c', '\n' + text)
+                else:
+                    t.insert(f'{n}.0', text + '\n')
+        self.ctl.exclude_undo(cid)
+        self.exclude_bar.pack_forget()
 
     def _on_protocol_menu(self, e):
         self.out_txt.focus_set()
