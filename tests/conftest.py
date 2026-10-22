@@ -96,6 +96,21 @@ def _make_app(tmp_path, *paths):
     return a
 
 
+_KEEP: list = []
+
+
+def _destroy(a):
+    """Закрыть окно и держать его объекты до конца сессии. Иначе их добивает
+    сборщик мусора — и из фонового потока телеметрии (Tcl из чужого потока
+    падает: «Illegal instruction»), а сборка в главном потоке посреди сессии
+    удаляет старый интерпретатор Tk и сбивает отмену в следующем окне."""
+    try:
+        a.root.destroy()
+    except Exception:
+        pass
+    _KEEP.append(a)
+
+
 @pytest.fixture
 def app(tmp_path, order_xlsx):
     """Окно на настоящем Tk: пресеты «order» и «консультация» (текущий)."""
@@ -103,7 +118,7 @@ def app(tmp_path, order_xlsx):
     shutil.copy(order_xlsx, other)
     a = _make_app(tmp_path, order_xlsx, other)
     yield a
-    a.root.destroy()
+    _destroy(a)
 
 
 @pytest.fixture
@@ -113,7 +128,7 @@ def app_with_p(tmp_path, order_xlsx_with):
                          ('4p2', 'на верхней челюсти.'))
     a = _make_app(tmp_path, wb.path)
     yield a
-    a.root.destroy()
+    _destroy(a)
 
 
 @pytest.fixture(autouse=True)

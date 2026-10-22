@@ -110,6 +110,8 @@ class Controller:
         self.last_copy_edited = False
         self._last_generate_at = 0.0
         self.last_learn_broke: list[str] = []
+        from .canvas import Edits
+        self.canvas_edits = Edits()          # 0.5 b3: правки врача на холсте (режим оболочки)
         self.telemetry: Telemetry | None = None
         self._telemetry_cfg: TelemetryConfig | None = None
         self._telemetry_error = ''

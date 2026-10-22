@@ -176,3 +176,28 @@ def test_note_confirm_mode(ctl, order_xlsx):
     ctl.generate(format_path(ctl.workbook, ('4', '4f', '4f1')), via='button')
     modes = [e['mode'] for e in _events(ctl) if e['event'] == 'note_confirm']
     assert modes == ['comma', 'shell']
+
+
+def test_gc_only_in_main_thread():
+    """Сборка мусора — только в главном потоке (окно): иначе фоновая телеметрия
+    добивала бы переменные Tk из чужого потока."""
+    import gc
+    from conftest import _tk
+    from orthofill.ui import main_thread_gc
+    root = _tk()
+    try:
+        was = gc.isenabled()
+        main_thread_gc(root, every_ms=20)
+        assert not gc.isenabled()
+        n = []
+        gc.callbacks.append(lambda phase, info: n.append(phase))
+        root.after(80)
+        root.update()
+        root.after(30)
+        root.update()
+        gc.callbacks.pop()
+        assert 'start' in n
+    finally:
+        root.destroy()
+        if was:
+            gc.enable()
