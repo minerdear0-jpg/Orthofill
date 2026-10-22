@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from .logic import Facts, evaluate
 from .methods import METHOD_LABELS
-from .parse import arches_in, extract_facts, parse_wire_from_label
+from .parse import arches_in, clause, extract_facts, parse_wire_from_label
 from .render import Row, render_rows
 from .text import norm, stem_in, word_stem
 from .workbook import Item, ReferenceCase, Workbook
@@ -191,6 +191,7 @@ def _first_number(text: str) -> int | None:
 
 class _Ctx:
     def __init__(self, raw: str, wb: Workbook | None = None):
+        self.raw = raw
         self.f = extract_facts(raw)
         self.n = self.f['raw_norm']
         self.wb = wb
@@ -208,6 +209,7 @@ class _Ctx:
         # группа → (выбранные варианты, выбрано по записи?) — факты для условий
         self.picked: dict[str, tuple[list[Item], bool]] = {}
         self.unclear: set[str] = set()      # группа упомянута, но не распознана
+        self.details: dict[str, str] = {}   # код → уточнение словами врача («22 брекет»)
 
     def flag(self, code: str, reason: str):
         reasons = self.flags.setdefault(code, [])
@@ -236,6 +238,29 @@ def _good_bad(children, value, ctx, default_label, topic):
     if value is None:
         ctx.default(default_label)
     return _first(children, lambda t: 'удовлетвор' in t and 'неудовлетвор' not in t)
+
+
+def _elastic_named(c: Item, n: str) -> bool:
+    """Вариант эластиков назван в записи своим названием («перепел») и не отменён."""
+    words = [w for w in re.findall(r'[а-яa-z]+', norm(c.text)) if len(w) >= 3]
+    return bool(words) and all(stem_in(word_stem(w), n) for w in words) \
+        and not _cancelled(n, word_stem(words[0]))
+
+
+# указание на зубы/брекеты: «22 брекет», «на 13 зубе», «с 13 по 23», «11, 21»
+_TEETH = r'(?:(?:на|с)\s+)?\d{2}(?:\s*(?:,|и|-|–|по)\s*\d{2})*(?:\s+(?:брекет\w*|зуб\w*))?'
+
+
+def _adjust_detail(raw: str) -> str:
+    """Уточнение юстировки — только указание на зубы сразу после порядка изгиба,
+    ровно как написано («изгиб первого 22 Брекет» → «22 Брекет»). Больше ничего не
+    переносится: программа не пишет того, чего врач не сказал."""
+    m = re.search(r'(?:изгиб|юстир)[^.;,]*?(?<![а-яё])(?:перв\w*|втор\w*|трет\w*|[123])'
+                  r'(?:\s+порядк\w*)?', raw, re.I)
+    if not m:
+        return ''
+    d = re.match(r'\s*:?\s*(' + _TEETH + r')(?=\s|[.,;]|$)', raw[m.end():], re.I)
+    return d.group(1).strip() if d else ''
 
 
 def _select(group: Item, ctx: _Ctx) -> Item | None:
@@ -337,12 +362,7 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
         return _first(ch, lambda t: key in t)
 
     if kind == 'elastics':
-        hits = []
-        for c in ch:
-            words = [w for w in re.findall(r'[а-яa-z]+', norm(c.text)) if len(w) >= 3]
-            if words and all(stem_in(word_stem(w), ctx.n) for w in words):
-                if not _cancelled(ctx.n, word_stem(words[0])):
-                    hits.append(c)
+        hits = [c for c in ch if _elastic_named(c, ctx.n)]
         if len(hits) > 1:
             return _several(group, hits, ctx, 'эластики')
         if hits:
@@ -361,6 +381,10 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
         if len(hits) > 1:
             return _several(group, hits, ctx, 'юстировка')
         if hits:
+            detail = _adjust_detail(ctx.raw)
+            if detail:
+                ctx.details[hits[0].id] = detail
+                ctx.flag(group.id, 'уточнение перенесено из записи — проверьте')
             return hits[0]
         if re.search(r'юстир|изгиб', ctx.n):
             ctx.warn('юстировка: вид изгиба не распознан — допишите вручную')
@@ -602,12 +626,19 @@ def _apply_dictionary(wb: Workbook, ctx: _Ctx) -> None:
         if it is None:
             ctx.warn(f'слово «{e.word}» больше не находит пункт')
             continue
-        hits.append((m.start(), e.word, it))
-    for _, word, it in sorted(hits, key=lambda h: h[0]):
+        hits.append((m.start(), e.word, it, m.end()))
+    for start, word, it, end in sorted(hits, key=lambda h: h[0]):
         ctx.dictionary_hits.append(word)
         group = wb.by_id.get(it.parent) if it.level == 3 and not it.orphan else None
         if group is None:
             ctx.forced_singles.add(it.id)
+        elif rule_kind(group) == 'elastics' and any(
+                c is not it and _elastic_named(c, re.sub(_phrase_rx(word),
+                                                         lambda m: ' ' * len(m.group()), ctx.n))
+                for c in group.children):
+            # «тяги перепел»: вариант, названный другим словом, главнее выученного
+            # («лиса» = «Медведь» — то же слово: выученное главнее)
+            continue
         elif group.id in ctx.forced:
             ctx.warn(f'«{group.text.strip()}»: несколько слов врача — взято первое по записи')
         else:
@@ -690,7 +721,9 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
                     if sel is not None:     # [] — группа упомянута, вариант не выбран
                         out.append((item.id, item.text))
                         for c in (sel if isinstance(sel, list) else [sel]):
-                            out.append((c.id, c.text))
+                            detail = ctx.details.get(c.id)
+                            text = c.text.rstrip().rstrip('.') + ' ' + detail if detail else c.text
+                            out.append((c.id, text))
                 elif _shown(item, when[item.id], said, facts, ctx):
                     out.append((item.id, item.text))
         if out:

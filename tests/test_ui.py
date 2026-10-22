@@ -252,3 +252,70 @@ def test_import_update_refreshes_open_editor(app, order_xlsx_with):
     wb2 = order_xlsx_with(('4d4', 'на зубе.'))
     app.import_xlsx_path(wb2.path, update=True)
     assert ed.tree.exists('4d4')
+
+
+# ---------- диагностика 22.10: русская раскладка и меню полей ----------
+class _Ev:
+    def __init__(self, widget, keysym, keycode, state=4):
+        self.widget, self.keysym, self.keycode, self.state = widget, keysym, keycode, state
+
+
+def test_russian_paste_in_dialog(app):
+    import tkinter as tk
+    top = tk.Toplevel(app.root)
+    t = tk.Text(top)
+    t.pack()
+    top.update()
+    t.focus_force()
+    app.root.clipboard_clear()
+    app.root.clipboard_append('вставка')
+    assert app._on_ctrl_key(_Ev(t, 'Cyrillic_em', 55)) == 'break'      # Ctrl+М = Ctrl+V
+    app.root.update()
+    assert t.get('1.0', 'end-1c') == 'вставка'
+
+
+def test_ctrl_o_only_in_main_window(app, monkeypatch):
+    import tkinter as tk
+    called = []
+    monkeypatch.setattr(app, 'import_xlsx', lambda: called.append(1))
+    top = tk.Toplevel(app.root)
+    e = tk.Entry(top)
+    app._on_ctrl_key(_Ev(e, 'Cyrillic_shcha', 32))
+    assert not called
+
+
+def test_text_context_menu(app):
+    m = app._text_menu(app.raw_txt)
+    labels = [m.entrycget(i, 'label') for i in range(m.index('end') + 1) if m.type(i) == 'command']
+    assert labels == ['Отменить', 'Вырезать', 'Копировать', 'Вставить', 'Удалить', 'Выделить всё']
+    app.raw_txt.insert('1.0', 'абв')
+    m.invoke(m.index('Выделить всё'))
+    assert app.raw_txt.get('sel.first', 'sel.last') == 'абв'
+
+
+def test_protocol_menu_has_text_and_preset_items(app):
+    _gen(app, 'активация, рабочий, гигиена неуд')
+    line = next(i for i, ln in enumerate(app.out_txt.get('1.0', 'end-1c').splitlines(), 1)
+                if 'неудовлетвор' in ln)
+    m = app._protocol_menu(f'{line}.3')
+    labels = [m.entrycget(i, 'label') for i in range(m.index('end') + 1) if m.type(i) == 'command']
+    assert 'Копировать' in labels and any(lb.startswith('Изменить «') for lb in labels)
+
+
+def test_entry_context_menu(app):
+    m = app._text_menu(app.add_entry)
+    labels = [m.entrycget(i, 'label') for i in range(m.index('end') + 1) if m.type(i) == 'command']
+    assert 'Вставить' in labels and 'Выделить всё' in labels
+
+
+def test_russian_select_all_in_entry(app):
+    app.add_entry.insert(0, 'абв')
+    assert app._on_ctrl_key(_Ev(app.add_entry, 'Cyrillic_ef', 38)) == 'break'   # Ctrl+Ф = Ctrl+A
+    assert app.add_entry.selection_present()
+
+
+def test_altgr_is_not_a_shortcut(app):
+    # AltGr на Windows = Ctrl+Alt: символ раскладки, а не Ctrl+V
+    import sys
+    alt = 0x20000 if sys.platform == 'win32' else 0x8
+    assert app._on_ctrl_key(_Ev(app.raw_txt, 'Cyrillic_em', 55, state=0x4 | alt)) is None

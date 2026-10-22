@@ -196,3 +196,32 @@ def test_ctrl_space_off_passes_through(app):
     app.hints_on.set(False)
     app._toggle_hints()
     assert app.hint_box._manual(None) is None
+
+
+def test_right_arrow_accepts_tail(app):
+    app.ctl.learn('торк', '4g3')
+    _type(app, 'лигатурная, тор')
+    _key(app, 'Right')
+    assert _raw(app) == 'лигатурная, торк' and not app.hint_box.visible
+
+
+def test_right_arrow_moves_cursor_without_tail(app):
+    app.ctl.learn('торк', '4g3')
+    _type(app, 'тор абв')
+    app.raw_txt.mark_set('insert', '1.2')
+    app.hint_box.update()                              # курсор посреди слова — подсказки нет
+    _key(app, 'Right')
+    assert _raw(app) == 'тор абв' and app.raw_txt.index('insert') == '1.3'
+
+
+def test_moving_cursor_with_right_does_not_accept(app):
+    app.ctl.learn('торк', '4g3')
+    app.raw_txt.insert('1.0', 'лигатурная, тор 22')
+    app.raw_txt.mark_set('insert', '1.12')
+    app.raw_txt.focus_force()
+    app.root.update()
+    for _ in range(5):
+        app.raw_txt.event_generate('<KeyPress-Right>', when='now')
+        app.raw_txt.event_generate('<KeyRelease-Right>', when='now')
+        app.root.update()
+    assert _raw(app) == 'лигатурная, тор 22'

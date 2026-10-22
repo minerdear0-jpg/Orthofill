@@ -15,6 +15,9 @@ _KIND = {'doctor': 'ваше слово', 'history': 'из ваших запис
 _KEEP = {'Tab', 'Up', 'Down', 'Return', 'KP_Enter', 'Escape', 'Shift_L', 'Shift_R',
          'Control_L', 'Control_R', 'Alt_L', 'Alt_R', 'ISO_Next_Group', 'Caps_Lock'}
 _SEL_BG, _BORDER = '#e3eef7', '#1f5f8b'
+# движение курсора по готовому тексту — подсказку закрыть (→ не должна принимать
+# подсказку к слову, мимо которого просто проходит курсор)
+_NAV = {'Left', 'Right', 'Home', 'End', 'Prior', 'Next'}
 
 
 class HintBox:
@@ -35,7 +38,8 @@ class HintBox:
         text.bind('<KeyRelease>', self._on_key_release, add='+')
         for seq, fn in (('<Tab>', self._tab), ('<Down>', lambda e: self._move(1, e)),
                         ('<Up>', lambda e: self._move(-1, e)), ('<Return>', self._enter),
-                        ('<Escape>', self._escape), ('<Control-space>', self._manual)):
+                        ('<Escape>', self._escape), ('<Control-space>', self._manual),
+                        ('<Right>', self._right)):
             text.bind(seq, fn)
         text.bind('<FocusOut>', lambda e: self.close(), add='+')
         text.bind('<Button-1>', lambda e: self.close(), add='+')
@@ -162,6 +166,9 @@ class HintBox:
         return True
 
     def _on_key_release(self, e):
+        if e.keysym in _NAV:
+            self.close()
+            return
         if e.keysym in _KEEP or e.keysym == 'space' and e.state & 0x4:
             return
         self.update(force=self._forced and bool(e.state & 0x4) is False)
@@ -187,6 +194,14 @@ class HintBox:
         if self.items and self.selected >= 0 and self.accept():
             return 'break'
         self.close()
+        return None
+
+    def _right(self, e):
+        """→ принимает серый хвост (как в браузере и VS Code); иначе — курсор вправо."""
+        if e is not None and e.state & (0x1 | 0x4):
+            return None
+        if self.items and self.tail.cget('text') and self.accept(0 if self.selected < 0 else None):
+            return 'break'
         return None
 
     def _escape(self, e):
