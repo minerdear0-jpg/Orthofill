@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import string
 
-from .workbook import _CODE_RE, Workbook, _level
+from .workbook import _CODE_RE, Workbook, _level, link_tree
 
 CodeMap = dict[str, str]
 
@@ -152,9 +152,5 @@ def rebuild(wb: Workbook) -> None:
     """by_id, дети и разделы — заново по wb.items."""
     wb.by_id.clear()
     wb.by_id.update({it.id: it for it in wb.items})
-    for it in wb.items:
-        it.children = []
-    for it in wb.items:
-        if it.parent in wb.by_id:
-            wb.by_id[it.parent].children.append(it)
+    link_tree(wb.items, wb.by_id)
     wb.sections[:] = [it for it in wb.items if it.level == 1]
