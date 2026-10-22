@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .canon import canon, is_latin, layout_swap
 from .workbook import Item, Workbook
 
 SEP = ' › '
@@ -44,13 +45,46 @@ def _num(s: str) -> str:
     return s.lstrip('0') or '0'
 
 
+_LETTERS = re.compile(r"[^\W\d_]+(?:[-.'’][^\W\d_]+)*")
+
+
 class _Node:
-    __slots__ = ('words', 'nums')
+    """Слова узла в приведённом виде (canon) с пометкой «латиница в пресете»;
+    слова через дефис — и целиком, и частями; пары соседних слов (первое от 3
+    букв) — для слитного набора; числа — значащими цифрами."""
+    __slots__ = ('words', 'pairs', 'nums')
 
     def __init__(self, text: str):
-        toks = _WORD.findall(_key(text))
-        self.words = [t for t in toks if not t[0].isdigit()]
-        self.nums = [_num(t) for t in toks if t[0].isdigit()]
+        # римские цифры («по I классу») — числа, не буквы (иначе «I» = союз «и»)
+        romans = [_ROMAN[r] for r in _ROMAN_RE.findall(text)]
+        low = _key(_ROMAN_RE.sub(' ', text))
+        words: list[tuple[str, bool]] = []
+        plain: list[str] = []
+        for chunk in _LETTERS.findall(low):
+            lat = is_latin(chunk)
+            whole = canon(chunk)
+            words.append((whole, lat))
+            plain.append(whole)
+            parts = re.split(r"[-.'’]", chunk)
+            if len(parts) > 1:
+                words += [(canon(p), is_latin(p)) for p in parts if p]
+        self.words = words
+        self.pairs = [(a, b) for a, b in zip(plain, plain[1:]) if len(a) >= 3]
+        self.nums = [_num(t) for t in _NUM.findall(low)] + romans
+
+
+_ROMAN = {'I': '1', 'II': '2', 'III': '3', 'IV': '4', 'V': '5', 'VI': '6'}
+_ROMAN_RE = re.compile(r'(?<![A-Za-zА-Яа-яЁё])(III|II|IV|VI|I|V)(?![A-Za-zА-Яа-яЁё])')
+
+
+def _nodes(wb: Workbook) -> dict[str, _Node]:
+    """Приведённые слова узлов — один раз на пресет (пока тексты не менялись)."""
+    key = tuple((it.id, it.text) for it in wb.items)
+    cached = wb.__dict__.get('_shell_nodes')
+    if cached is None or cached[0] != key:
+        cached = (key, {it.id: _Node(it.text) for it in wb.items})
+        wb.__dict__['_shell_nodes'] = cached
+    return cached[1]
 
 
 def children_of(wb: Workbook, code: str | None) -> list[Item]:
@@ -123,41 +157,134 @@ def _endpoints(wb: Workbook, start: Path) -> list[Path]:
     return out
 
 
-def _token_matches(tok: str, node: _Node, code: str, synonyms: dict[str, str]) -> bool:
-    syn = synonyms.get(tok)
-    if syn is not None and syn == code:
-        return True
-    if any(w.startswith(tok) and syn_code == code for w, syn_code in synonyms.items()):
-        return True
-    if tok[0].isdigit():
-        more = bool(re.search(r'[хx×*/]$', tok))            # «16х» — дальше ещё число
-        seq = [_num(n) for n in _NUM.findall(tok.replace(',', '.'))]
-        nums = node.nums
-        for i in range(len(nums) - len(seq) + 1):
-            if all((nums[i + k] == seq[k]) if k < len(seq) - 1 or more
-                   else nums[i + k].startswith(seq[k]) for k in range(len(seq))):
-                if not more or i + len(seq) < len(nums):
-                    return True
+_NUMTOK = re.compile(r'[.,]?\d')
+_SIZESEP = {'х', 'x', '×', '*', '/'}
+
+
+def _is_num(tok: str) -> bool:
+    return bool(_NUMTOK.match(tok))
+
+
+@dataclass
+class _Tok:
+    text: str               # приведённое слово (число — как набрано)
+    raws: list[int]         # из каких набранных слов (номера)
+    num: bool
+    latin: bool             # набрано латиницей
+
+
+def _num_matches(tok: str, node: _Node) -> bool:
+    more = bool(re.search(r'[хx×*/]$', tok))            # «16х» — дальше ещё число
+    seq = [_num(n) for n in _NUM.findall(tok.replace(',', '.'))]
+    nums = node.nums
+    if not seq:
         return False
-    for w in node.words:
-        if w.startswith(tok):
-            return True
-        n = 0
-        while n < min(len(w), len(tok)) and w[n] == tok[n]:
-            n += 1
-        if n >= 3 and n >= len(tok) - 1:                    # «дуга» → «дуги»
-            return True
+    for i in range(len(nums) - len(seq) + 1):
+        if all((nums[i + k] == seq[k]) if k < len(seq) - 1 or more
+               else nums[i + k].startswith(seq[k]) for k in range(len(seq))):
+            if not more or i + len(seq) < len(nums):
+                return True
     return False
 
 
-def _tokens(typed: str) -> list[str]:
-    return [t for t in _key(typed).split() if t]
+def _fits(glued: str, w: str, latin_typed: bool, latin_word: bool) -> bool:
+    """Набранное подходит к слову узла: начало слова. Набрано латиницей, а слово
+    в пресете русское — только целиком («perepel» = «перепел», но «ni» ≠ «нижней»)."""
+    if latin_typed and not latin_word:
+        return glued == w and len(w) >= 3       # «s» ≠ предлог «с»
+    return w.startswith(glued)
+
+
+def _match_run(toks: list[_Tok], i: int, node: _Node, code: str,
+               synonyms: dict[str, set[str]]) -> int:
+    """Сколько набранных слов, начиная с i, покрывает узел (0 — не подходит).
+    Числа — по одному; слова — и склейкой соседних («cu ni ti» → «кунити»)."""
+    tok = toks[i]
+    if any(w.startswith(tok.text) and code in codes for w, codes in synonyms.items()):
+        return 1
+    if tok.num:
+        return 1 if _num_matches(tok.text, node) else 0
+    best = 0
+    for w, wlat in node.words:
+        glued, k, lat = '', i, False
+        while k < len(toks) and not toks[k].num:
+            if k > i and (len(toks[k].text) < 2 or len(toks[i].text) < 2):
+                break                           # клеим кусочки от 2 букв («cu ni ti»), не «ду г»
+            glued += toks[k].text
+            lat = lat or toks[k].latin
+            if not _fits(glued, w, lat, wlat):
+                if lat and not wlat and w.startswith(glued):
+                    k += 1                      # латиница по русскому слову — ждём целого
+                    continue
+                break
+            best = max(best, k - i + 1)
+            k += 1
+        if best == 0 and not tok.latin:
+            n = 0
+            while n < min(len(w), len(tok.text)) and w[n] == tok.text[n]:
+                n += 1
+            if n >= 3 and n >= len(tok.text) - 1:           # «дуга» → «дуги»
+                best = 1
+    for a, b in node.pairs:                     # «фотопротокол» по «фото протокол»
+        glued, k = '', i
+        while k < len(toks) and not toks[k].num:
+            if k > i and (len(toks[k].text) < 2 or len(toks[i].text) < 2):
+                break
+            glued += toks[k].text
+            if not (a + b).startswith(glued):
+                break
+            if len(glued) >= len(a) + 2 and not any(t.latin for t in toks[i:k + 1]):
+                best = max(best, k - i + 1)
+            k += 1
+    return best
+
+
+def _prep(typed: str, swap: bool = False) -> list[_Tok]:
+    """Набранные слова: «16 х 25» — одно число; слова — в приведённом виде;
+    swap — латинские слова от 3 букв в другой раскладке («kbufnehyfz»)."""
+    raw = typed.split()
+    out: list[_Tok] = []
+    i = 0
+    while i < len(raw):
+        t = raw[i]
+        if (_is_num(t) and i + 2 < len(raw) and raw[i + 1].lower() in _SIZESEP
+                and _is_num(raw[i + 2])):
+            out.append(_Tok(_key(t + 'х' + raw[i + 2]), [i, i + 1, i + 2], True, False))
+            i += 3
+            continue
+        if _is_num(t):
+            out.append(_Tok(_key(t), [i], True, False))
+        elif t.upper() in _ROMAN and t.isascii():      # набрали «ii» — это II
+            out.append(_Tok(_ROMAN[t.upper()], [i], True, False))
+        else:
+            lat = is_latin(t)
+            if swap and lat and len(t) >= 3:
+                c, lat = canon(layout_swap(t)), False
+            else:
+                c = canon(t)
+            if c:
+                out.append(_Tok(c, [i], False, lat))
+        i += 1
+    return out
 
 
 def resolve(wb: Workbook, done: Path, typed: str, synonyms: dict[str, str]) -> Resolution:
-    toks = _tokens(typed)
-    syn = {_key(w): c for w, c in synonyms.items()}
-    nodes = {it.id: _Node(it.text) for it in wb.items}
+    r = _resolve(wb, done, typed, _prep(typed), synonyms)
+    if not r.leaves and typed.strip():          # не та раскладка: только латинские слова
+        alt = _prep(typed, swap=True)           # от 3 букв и только если как набрано — ничего
+        if [t.text for t in alt] != [t.text for t in _prep(typed)]:
+            r2 = _resolve(wb, done, typed, alt, synonyms)
+            if r2.leaves:
+                return r2
+    return r
+
+
+def _resolve(wb: Workbook, done: Path, typed: str, toks: list[_Tok],
+             synonyms: dict[str, str]) -> Resolution:
+    syn: dict[str, set[str]] = {}
+    for w, c in synonyms.items():
+        syn.setdefault(canon(w), set()).add(c)
+    nodes = _nodes(wb)
     paths = _endpoints(wb, done)
     if not toks:
         common = _common(paths) if paths else done
@@ -168,17 +295,21 @@ def resolve(wb: Workbook, done: Path, typed: str, synonyms: dict[str, str]) -> R
     first_at: list[int] = []
     best = 0
     for p in paths:
-        pos, matched, last_at, at = len(done), 0, -1, []
-        for t in toks:
-            while pos < len(p) and not _token_matches(t, nodes[p[pos]], p[pos], syn):
+        pos, i, last_at, at = len(done), 0, -1, []
+        while i < len(toks):
+            c = 0
+            while pos < len(p):
+                c = _match_run(toks, i, nodes[p[pos]], p[pos], syn)
+                if c:
+                    break
                 pos += 1
-            if pos >= len(p):
+            if not c:
                 break
-            matched += 1
+            at += [pos] * c
             last_at = pos
-            at.append(pos)
-        best = max(best, matched)
-        if matched == len(toks):
+            i += c
+        best = max(best, i)
+        if i == len(toks):
             if not leaves:
                 first_at = at
             leaves.append(p)
@@ -186,8 +317,10 @@ def resolve(wb: Workbook, done: Path, typed: str, synonyms: dict[str, str]) -> R
             if ch not in choices:
                 choices.append(ch)
     common = _common(leaves) if leaves else done
-    rest = [t for t, a in zip(typed.split(), first_at) if a >= len(common)]
-    return Resolution(leaves, common, choices, None if leaves else best, rest)
+    raw = typed.split()
+    rest = [raw[j] for t, a in zip(toks, first_at) if a >= len(common) for j in t.raws]
+    bad = None if leaves else (toks[best].raws[0] if best < len(toks) else len(raw) - 1)
+    return Resolution(leaves, common, choices, bad, rest)
 
 
 def _common(paths: list[Path]) -> Path:
