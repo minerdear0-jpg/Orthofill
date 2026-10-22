@@ -241,7 +241,10 @@
 
 ## Сборка (для администратора)
 
-На Windows в папке проекта:
+Git не нужен: скачайте архив исходников
+<https://github.com/minerdear0-jpg/Orthofill/archive/refs/heads/main.zip>,
+распакуйте и в папке `Orthofill-main` выполните (нужен интернет — `uv` скачает
+Python и библиотеки):
 
 ```
 powershell -ExecutionPolicy Bypass -File build.ps1
@@ -253,7 +256,8 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 - `dist\Orthofill-<версия>.exe` — exe одним файлом.
 
 Версия и код сборки видны в заголовке окна: «Orthofill 0.2 beta 3 · сборка 4c1de53 · 2026-10-21».
-Код сборки — это коммит git, из которого собрана программа.
+Код сборки — это коммит git, из которого собрана программа (в архиве GitHub его
+подставляет сам GitHub в `orthofill/_commit.txt`).
 
 Разработка: `uv run pytest` — тесты, `uv run python -m orthofill` — запуск,
 `uv run python -m orthofill --test order.xlsx` — сверка с эталонами в консоли.
