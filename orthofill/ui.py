@@ -175,6 +175,8 @@ class App:
         f.pack(fill='both', expand=True)
         from .hintbox import HintBox
         self.hint_box = HintBox(self, self.raw_txt)
+        from .behavior import NoteStats
+        self.note_stats = NoteStats()
 
         self.out_panel = ttk.Frame(self.body)
         ttk.Label(self.out_panel, text='ПРОТОКОЛ (МОЖНО ПРАВИТЬ)', font=self.f_label,
@@ -290,6 +292,7 @@ class App:
 
         r.bind('<Configure>', self._on_resize, add='+')
         self._relayout('wide')
+        self._track_buttons(self.root)
 
     def _relayout(self, mode: str):
         if mode == self.mode:
@@ -349,6 +352,9 @@ class App:
             for seq in ('<Control-Return>', '<Control-KP_Enter>'):
                 w.bind(seq, lambda e: (self.generate('ctrl_enter'), 'break')[1])
         self.root.bind_all('<Control-KeyPress>', self._on_ctrl_key, add='+')
+        for seq in ('<KeyPress-Control_L>', '<KeyPress-Control_R>'):
+            self.root.bind_all(seq, self._noop_snap, add='+')
+        self.raw_txt.bind('<KeyPress>', self._note_key, add='+')
         # меню правой кнопки во всех полях ввода (и в диалогах, и в редакторе)
         for cls in ('Text', 'Entry', 'TEntry'):
             self.root.bind_class(cls, '<Button-3>', self._on_field_menu, add='+')
@@ -360,6 +366,12 @@ class App:
         latin = len(e.keysym) == 1 and e.keysym.isascii()
         key = (_VK if sys.platform == 'win32' else _X11).get(e.keycode)
         shift = bool(e.state & 0x1)
+        k = key or (e.keysym.lower() if latin else None)
+        if k:
+            self.ctl.track('ui', name=f'ctrl+{"shift+" if shift else ""}{k}',
+                           layout='lat' if latin else 'other')
+            if k in ('v', 'x', 'z'):
+                self.root.after_idle(lambda: self._noop_check(e.widget, k, latin))
         try:
             main = e.widget.winfo_toplevel() is self.root
         except AttributeError:          # служебный виджет Tk без объекта Python
@@ -386,6 +398,88 @@ class App:
                                   'x': '<<Cut>>', 'z': '<<Undo>>'}[key])
             return 'break'
         return None
+
+    # ---------- телеметрия: поведение ----------
+    @staticmethod
+    def _field_state(w):
+        if isinstance(w, tk.Text):
+            return w.get('1.0', 'end-1c'), tuple(str(i) for i in w.tag_ranges('sel'))
+        if isinstance(w, (tk.Entry, ttk.Entry)):
+            return w.get(), (w.index('insert'), w.selection_present())
+        return None
+
+    def _noop_snap(self, e):
+        """Нажат Ctrl: запомнить поле — после сочетания видно, сработало ли оно."""
+        try:
+            st = self._field_state(e.widget)
+        except (tk.TclError, AttributeError):
+            st = None
+        self._snap = (e.widget, st) if st is not None else None
+
+    def _field_name(self, w) -> str:
+        if w is self.raw_txt:
+            return 'raw'
+        if w is self.out_txt:
+            return 'protocol'
+        if w is self.add_entry:
+            return 'add'
+        return 'dialog'
+
+    def _noop_check(self, w, key: str, latin: bool):
+        snap = getattr(self, '_snap', None)
+        if not snap or snap[0] is not w:
+            return
+        try:
+            now = self._field_state(w)
+        except tk.TclError:
+            return
+        if now == snap[1]:
+            self.ctl.track('key_noop', key=f'ctrl+{key}', field=self._field_name(w),
+                           layout='lat' if latin else 'other')
+        self._snap = (w, now)          # Ctrl держат — следующее сочетание сравнить с этим
+
+    def _note_key(self, e):
+        kind = ('backspace' if e.keysym == 'BackSpace' else 'delete' if e.keysym == 'Delete'
+                else 'paste' if e.state & 0x4 and (_VK if sys.platform == 'win32' else _X11
+                                                    ).get(e.keycode) == 'v'
+                else 'char' if e.char and e.char.isprintable() and not e.state & 0x4 else '')
+        if not kind:
+            return
+        if not self.note_stats.started:
+            self.ctl.track('note_start')
+        self.note_stats.key(kind)
+
+    def _track_buttons(self, parent):
+        """Кнопки и флажки — событие ui с их подписью (кнопки-слова записи — «chip»)."""
+        stack = [parent]
+        while stack:
+            w = stack.pop()
+            stack.extend(w.winfo_children())
+            if not isinstance(w, (ttk.Button, ttk.Checkbutton)) or getattr(w, '_tracked', False):
+                continue
+            orig = str(w.cget('command'))
+            if not orig:
+                continue
+            name = 'chip' if str(w.cget('style')) == 'Toolbutton' else str(w.cget('text'))
+            w._tracked = True
+            w.configure(command=lambda w=w, orig=orig, name=name: self._ui_invoke(name, w, orig))
+
+    def _ui_invoke(self, name: str, w, orig: str):
+        self.ctl.track('ui', name=name)
+        return w.tk.eval(orig)
+
+    def _track_menu(self, menu: tk.Menu):
+        end = menu.index('end')
+        for i in range(0 if end is None else end + 1):
+            kind = menu.type(i)
+            if kind not in ('command', 'radiobutton', 'checkbutton'):
+                continue
+            orig = str(menu.entrycget(i, 'command'))
+            if not orig:
+                continue
+            name = ('switch_preset' if kind == 'radiobutton'
+                    else str(menu.entrycget(i, 'label')).split('«')[0].strip())
+            menu.entryconfigure(i, command=lambda n=name, o=orig: self._ui_invoke(n, menu, o))
 
     # ---------- действия ----------
     def _clipboard(self, text: str):
@@ -485,6 +579,7 @@ class App:
         m.add_command(label='Импорт xlsx…', command=self.import_xlsx, accelerator='Ctrl+O')
         m.add_command(label='Экспорт xlsx…', command=self.export_xlsx,
                       state='normal' if self.ctl.workbook else 'disabled')
+        self._track_menu(m)
         wb = self.ctl.workbook
         self.preset_var.set(self.ctl.preset_id if self.ctl.preset_id is not None else -1)
         self.preset_btn.configure(text=f'Пресет: {wb.name}' if wb else 'Пресет')
@@ -521,6 +616,7 @@ class App:
         for i, (key, label) in enumerate(buttons):
             ttk.Button(row, text=label, style='Accent.TButton' if i == 0 else 'TButton',
                        command=lambda k=key: pick(k)).pack(side='left', padx=(0 if i == 0 else 6, 0))
+        self._track_buttons(row)
         win.bind('<Escape>', lambda e: win.destroy())
         win.grab_set()
         win.wait_window()
@@ -719,6 +815,8 @@ class App:
             if not self._live_kept:
                 self.live_label.configure(text=_LIVE_ASK)
                 self.live_keep_btn.pack(side='right')
+            if not self.live_bar.winfo_manager():
+                self.ctl.track('protocol_edit', live_bar='shown')
             self.live_bar.pack(fill='x', pady=(0, 6), before=self.out_frame)
             return
         self._live_show()
@@ -748,12 +846,14 @@ class App:
 
     def _live_update_now(self):
         """«Обновить»: пересобрать протокол по записи (ручная правка уходит)."""
+        self.ctl.track('protocol_edit', live_bar='update')
         self._unfreeze()
         self._live_show()
 
     def _live_keep(self):
         """«Оставить»: правка остаётся; полоска не спрашивает, но напоминает, что
         запись в протокол больше не попадает (до «Обновить», Ctrl+Enter, пустой записи)."""
+        self.ctl.track('protocol_edit', live_bar='keep')
         self._live_kept = True
         self.live_label.configure(text=_LIVE_KEPT)
         self.live_keep_btn.pack_forget()
@@ -761,7 +861,7 @@ class App:
     def generate(self, via: str = 'button'):
         """Ctrl+Enter — подтвердить протокол: в буфер — то, что видно справа (с
         правками врача), запись — в журнал. via — чем подтвердил (телеметрия)."""
-        self.hint_box.close()
+        self.hint_box.close(reason='confirm')
         pending = self._live_job is not None
         self._cancel_live()
         current = self.out_txt.get('1.0', 'end-1c')
@@ -861,6 +961,9 @@ class App:
         self._on_add_query()
 
     def _close_add(self):
+        if getattr(self, '_add_stat', None):        # искал и закрыл без выбора
+            self.ctl.track('add_search', **self._add_stat, chosen=False)
+        self._add_stat = None
         self._add_word = None
         self.add_for.pack_forget()
         self.add_list.pack_forget()
@@ -874,6 +977,9 @@ class App:
     def _on_add_query(self):
         q = self.add_entry.get()
         self._hits = self.ctl.search(q) if (q.strip() or self._add_word) else []
+        self._add_stat = ({'qlen': len(q.strip()), 'found': len(self._hits),
+                           'for_word': bool(self._add_word)}
+                          if (q.strip() or self._add_word) else None)
         lb = self.add_list
         lb.delete(0, 'end')
         for h in self._hits:
@@ -902,6 +1008,9 @@ class App:
         if not self._hits or self.ctl.workbook is None:
             return
         hit = self._hits[index]
+        if getattr(self, '_add_stat', None):
+            self.ctl.track('add_search', **self._add_stat, chosen=True, pos=index)
+            self._add_stat = None
         word = self._add_word
         if word:            # для слова записи: привязать и запомнить — протокол соберётся сам
             self._bind_word(word, hit.code)
@@ -999,6 +1108,7 @@ class App:
             ttk.Label(bar, text='Каким словом это было в записи?').pack(side='left')
             self._add_chips(bar)
         ttk.Button(bar, text='Пропустить', command=self._skip_learning).pack(side='left', padx=(6, 0))
+        self._track_buttons(bar)
         bar.pack(anchor='w', fill='x', pady=(4, 0), after=self.status_lbl.master)
 
     def _note_words(self) -> list[str]:
@@ -1037,6 +1147,7 @@ class App:
         self._add_chips(self.learn_bar, show_all)
         ttk.Button(self.learn_bar, text='Пропустить',
                    command=self._skip_learning).pack(side='left', padx=(6, 0))
+        self._track_buttons(self.learn_bar)
         self.learn_bar.pack(anchor='w', fill='x', pady=(4, 0), after=self.status_lbl.master)
 
     def _show_chips(self):
@@ -1208,6 +1319,7 @@ class App:
                          state=edit if has_sel else 'disabled')
         menu.add_separator()
         menu.add_command(label='Выделить всё', command=select_all)
+        self._track_menu(menu)
         return menu
 
     def _on_field_menu(self, e):
@@ -1227,6 +1339,7 @@ class App:
             menu.add_separator()
             menu.add_command(label=f'Изменить «{text[:40]}{"…" if len(text) > 40 else ""}» в пресете…',
                              command=lambda: self.open_editor(code))
+        self._track_menu(menu)
         return menu
 
     def _on_protocol_menu(self, e):
@@ -1332,8 +1445,10 @@ class App:
         self.root.destroy()
 
     def _note_stats(self) -> dict:
-        """Счётчики набора записи (Task 4 — NoteStats)."""
-        return {}
+        """Счётчики набора записи — для note_confirm; набор следующей записи — заново."""
+        out = self.note_stats.summary()
+        self.note_stats.reset()
+        return out
 
     def _session_start(self):
         import platform
