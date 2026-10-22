@@ -347,15 +347,16 @@ class App:
             for i, w in enumerate(self.bar_widgets):
                 w.grid(row=i % 2, column=i // 2, sticky='w', padx=(0, 12), pady=2)
         b = self.body
-        for i in range(2):
-            b.columnconfigure(i, weight=0)
-            b.rowconfigure(i, weight=0)
+        for i in range(2):          # и uniform: колонка проверки не держит место потом
+            b.columnconfigure(i, weight=0, uniform='')
+            b.rowconfigure(i, weight=0, uniform='')
         if self.ctl.shell_mode and hasattr(self, 'drawer_btn'):
             self._layout_shell()
             return
         if hasattr(self, 'drawer_btn'):
             self.drawer_btn.place_forget()
             self.out_panel.place_forget()
+            self.out_panel.configure(relief='flat', borderwidth=0, padding=0)
         if mode == 'wide':
             self.in_panel.grid(row=0, column=0, sticky='nsew', padx=(0, 12))
             self.out_panel.grid(row=0, column=1, sticky='nsew')
@@ -378,9 +379,9 @@ class App:
         for p in (self.in_panel, self.out_panel):
             p.grid_forget()
             p.place_forget()
-        for i in range(2):
-            b.columnconfigure(i, weight=0)
-            b.rowconfigure(i, weight=0)
+        for i in range(2):          # и uniform: колонка проверки не держит место потом
+            b.columnconfigure(i, weight=0, uniform='')
+            b.rowconfigure(i, weight=0, uniform='')
         narrow = self.mode == 'narrow'
         if self.shell_view == 'review':
             split = int(REVIEW_SPLIT * 100)
@@ -389,7 +390,7 @@ class App:
                 self.out_panel.grid(row=1, column=0, sticky='nsew')
                 b.columnconfigure(0, weight=1)
                 b.rowconfigure(0, weight=1)
-                b.rowconfigure(1, weight=2)
+                b.rowconfigure(1, weight=1)     # узко: запись и протокол поровну
             else:
                 self.in_panel.grid(row=0, column=0, sticky='nsew', padx=(0, 12))
                 self.out_panel.grid(row=0, column=1, sticky='nsew')
@@ -425,6 +426,11 @@ class App:
 
     def _toggle_drawer(self, e=None):
         if not self.ctl.shell_mode:
+            return None
+        try:                    # F2 — только в главном окне (не в редакторе и диалогах)
+            if e is not None and e.widget.winfo_toplevel() is not self.root:
+                return None
+        except (AttributeError, KeyError, tk.TclError):
             return None
         self.set_shell_view('input' if self.shell_view in ('drawer', 'review') else 'drawer')
         self.raw_txt.focus_set()
@@ -1714,7 +1720,10 @@ class App:
         self.hint_box.close()
         self.shell_box.close()
         self._reset_canvas()
-        self.shell_view = 'input'
+        if self.shell_view != 'input':      # событие закрытия — для телеметрии
+            prev = self.shell_view
+            self.shell_view = 'input'
+            self.ctl.track('ui', name='review_close' if prev == 'review' else 'drawer_close')
         mode, self.mode = self.mode, None           # раскладка — заново под режим
         self._relayout(mode or 'wide')
         self.shell_box.update()

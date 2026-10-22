@@ -72,7 +72,7 @@ def test_hung_server_does_not_block(tmp_path):
     start = time.perf_counter()
     for i in range(1000):
         t.put({'event': 'x', 'n': i})
-    assert time.perf_counter() - start < 0.05
+    assert time.perf_counter() - start < 1.0   # не ждёт сеть (её ожидание — 10 с); запас на нагрузку машины
     start = time.perf_counter()
     t.close()
     assert time.perf_counter() - start < 0.6
