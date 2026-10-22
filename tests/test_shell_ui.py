@@ -427,8 +427,12 @@ def test_modifier_release_keeps_dwell(sh):
     """Отпустили Alt/Shift/переключили раскладку после ← — остановка на уровне не сбивается."""
     _line_at(sh, ('4', '4b', '4b5'))
     _key(sh, 'Left')
-    for ks in ('Alt_L', 'ISO_Next_Group', 'Caps_Lock', 'a'):
-        sh.raw_txt.event_generate('<KeyRelease>', keysym=ks, when='now')
+    import tkinter as tk
+    for ks in ('Alt_L', 'Shift_L', 'Caps_Lock', 'ISO_Next_Group', 'a'):
+        try:                # ISO_Next_Group (смена раскладки) есть только в X11
+            sh.raw_txt.event_generate('<KeyRelease>', keysym=ks, when='now')
+        except tk.TclError:
+            pass
     assert sh.shell_box._dwell_job is not None
 
 
