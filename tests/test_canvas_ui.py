@@ -153,3 +153,19 @@ def test_comma_mode_unchanged(app):
     _wait(app)
     assert app.live_frozen and app.live_bar.winfo_manager()
     assert not app.out_txt.tag_ranges('skeleton') and not app.out_txt.tag_ranges('skeleton_next')
+
+
+def test_note_confirm_canvas_counts(sh, monkeypatch):
+    seen = []
+    monkeypatch.setattr(sh.ctl, 'track', lambda e, **d: seen.append((e, d)))
+    _note(sh, ('4', '4b', '4b5'), ('4', '4f', '4f1'))
+    n = _line_of(sh, 'Смена дуги')
+    sh.out_txt.insert(f'{n}.end', '\nДвадцать символов!!!')   # 20 символов
+    m = _line_of(sh, 'Перепел')
+    sh.out_txt.insert(f'{m}.end', ' — по 2 часа')
+    k = _line_of(sh, 'фотопротокол')
+    sh.out_txt.delete(f'{k}.0', f'{k + 1}.0')
+    sh.generate('ctrl_enter')
+    d = [d for e, d in seen if e == 'note_confirm'][-1]
+    assert d['own_chars'] == 20 and d['replaced'] == 1 and d['removed'] == 1
+    assert 'Двадцать' not in repr(seen)

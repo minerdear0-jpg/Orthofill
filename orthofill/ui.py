@@ -997,9 +997,13 @@ class App:
             current = self.out_txt.get('1.0', 'end-1c')
         edited = self.ctl.needs_confirm_regenerate(current)
         stale = edited and (pending or self.live_frozen)   # дописано после правки протокола
+        stats = self._note_stats()
+        if self.ctl.shell_mode and self._canvas_lines:      # правки на холсте — без текста
+            e = self.ctl.canvas_edits
+            stats.update(own_chars=sum(len(o.text) for o in e.own if not o.replaces),
+                         replaced=sum(1 for o in e.own if o.replaces), removed=len(e.removed))
         r = self.ctl.generate(self.raw_txt.get('1.0', 'end-1c'), tokens=self.tokens(),
-                              text=current if edited else None, via=via,
-                              stats=self._note_stats())
+                              text=current if edited else None, via=via, stats=stats)
         self._unfreeze()
         if r.copied and edited:
             self.ctl.confirm_shown(current)         # правка подтверждена — это и есть протокол
