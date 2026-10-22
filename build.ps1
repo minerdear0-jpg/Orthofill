@@ -46,7 +46,14 @@ $common = @('--noconfirm', '--clean', '--windowed', '--paths', '.',
             '--icon', 'assets\orthofill.ico',
             '--add-data', 'assets\orthofill.ico;assets',
             '--add-data', 'CHANGELOG.md;.',      # «О программе» → «Что нового»
+            '--add-data', 'orthofill\names_ru.txt;orthofill',   # вырезание ФИО
             '--collect-data', 'sv_ttk')
+# телеметрия: telemetry.json (его выдаёт server/install.sh) в папке проекта —
+# встраивается в exe; файл рядом с exe всё равно главнее (смена IP — без пересборки)
+if (Test-Path telemetry.json) {
+    $common += @('--add-data', 'telemetry.json;.')
+    Write-Host 'telemetry.json встроен в сборку' -ForegroundColor Green
+}
 
 try {
     Step 'Портативная версия (папка)'

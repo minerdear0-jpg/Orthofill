@@ -1,0 +1,89 @@
+import pytest
+
+from orthofill.scrub import scrub_event, scrub_text
+
+
+@pytest.mark.parametrize('raw, out', [
+    ('Иванова Мария Петровна, брекеты', '‹ФИО›, брекеты'),
+    ('пац. Петров И.И. замена дуги', 'пац. ‹ФИО› замена дуги'),
+    ('И. И. Петров жалоб нет', '‹ФИО› жалоб нет'),
+    ('лигатурная, петров и.и.', 'лигатурная, ‹ФИО›'),
+    ('отклеился один т.е. нижний', 'отклеился один т.е. нижний'),
+    ('иван иванович, активация', '‹ФИО›, активация'),
+    ('Маша жалуется на боль', '‹ФИО› жалуется на боль'),
+    ('у Ольги Сергеевны отклеился', 'у ‹ФИО› отклеился'),
+    ('класс по Энглу, 18х25 тма', 'класс по Энглу, 18х25 тма'),
+    ('Лигатурная, перепел', 'Лигатурная, перепел'),
+    ('сверху слева, левой стороны', 'сверху слева, левой стороны'),
+    ('дуга симметрична, ровна', 'дуга симметрична, ровна'),
+    ('Т.к. боль, нед. 0.016 нити', 'Т.к. боль, нед. 0.016 нити'),
+])
+def test_scrub_text(raw, out):
+    assert scrub_text(raw)[0] == out
+
+
+def test_count():
+    assert scrub_text('Иванова Мария Петровна и Петров И.И.')[1] == 2
+    assert scrub_text('лигатурная')[1] == 0
+
+
+def test_short_keep_words_do_not_protect_initials():
+    assert scrub_text('Петров И.И.', keep=frozenset({'и'}))[0] == '‹ФИО›'
+
+
+def test_keep_words_untouched():
+    assert scrub_text('Мария', keep=frozenset({'мария'}))[0] == 'Мария'
+
+
+def test_scrub_event_nested():
+    ev = {'event': 'generate', 'raw': 'Петров И.И.', 'lines': [['4g3', 'Иван Иванович']], 'n': 3}
+    out = scrub_event(ev)
+    assert out['raw'] == '‹ФИО›' and out['lines'][0][1] == '‹ФИО›'
+    assert out['scrubbed'] == 2 and out['n'] == 3 and out['lines'][0][0] == '4g3'
+    assert ev['raw'] == 'Петров И.И.'      # исходный не изменён
+
+
+def test_clean_event_has_no_counter():
+    assert 'scrubbed' not in scrub_event({'raw': 'лигатурная'})
+
+
+def test_name_found_in_one_field_removed_from_all():
+    """Живая проверка 22.10: «Иванова» ушла в unknown.words отдельным словом."""
+    ev = {'event': 'unknown', 'raw': 'Иванова Мария Петровна, перепел',
+          'raw_norm': 'иванова мария петровна, перепел',
+          'words': ['Иванова', 'перепел'], 'lines': [['4f1', 'Петровна жалуется']]}
+    out = scrub_event(ev)
+    blob = repr(out).lower()
+    assert 'иванов' not in blob and 'петровн' not in blob and 'мари' not in blob
+    assert out['words'] == ['‹ФИО›', 'перепел']
+
+
+def test_word_list_read_as_phrase():
+    """Событие unknown — только список слов (без записи), в порядке записи."""
+    out = scrub_event({'event': 'unknown', 'words': ['Иванова', 'Мария', 'Петровна', 'квакозябра']})
+    assert out['words'] == ['‹ФИО›', '‹ФИО›', '‹ФИО›', 'квакозябра']
+
+
+def test_selftest_fails_without_names(monkeypatch):
+    """Сборка без names_ru.txt — вырезание ФИО ослабло бы молча; самопроверка exe это ловит."""
+    import orthofill.scrub as sc
+    from orthofill.ui import selftest
+    monkeypatch.setattr(sc, 'NAMES', frozenset())
+    assert selftest() == 1
+
+
+def test_meta_fields_not_scrubbed():
+    """Финальная проверка: прозвище врача «Маша» — не ФИО пациента."""
+    out = scrub_event({'doctor': 'Маша', 'install': 'abc', 'event': 'ui', 'raw': 'Маша'})
+    assert out['doctor'] == 'Маша' and out['raw'] == '‹ФИО›'
+
+
+@pytest.mark.parametrize('raw, out', [
+    ('у петровой м.м. отклеился', 'у ‹ФИО› отклеился'),
+    ('петрову и. жалоб нет', '‹ФИО› жалоб нет'),
+    ('иванову и.и., активация', '‹ФИО›, активация'),
+    ('у сидоровых а.б.', 'у ‹ФИО›'),
+    ('зубов т.е. нет', 'зубов т.е. нет'),
+])
+def test_lowercase_oblique_with_initials(raw, out):
+    assert scrub_text(raw)[0] == out
