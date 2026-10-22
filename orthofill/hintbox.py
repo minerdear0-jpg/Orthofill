@@ -159,7 +159,10 @@ class HintBox:
         t.configure(autoseparators=False)   # одна отмена возвращает набранное
         t.edit_separator()
         t.delete(f'insert -{len(self.prefix)}c', 'insert')
-        t.insert('insert', hint.word)
+        start = t.index('insert')
+        t.insert('insert', hint.word, ())
+        if hint.code:                       # слово с известным пунктом — токен
+            self.app.bind_token(start, t.index('insert'), hint.code, hint.becomes)
         t.edit_separator()
         t.configure(autoseparators=True)
         self.close()

@@ -164,6 +164,11 @@ class App:
         self.raw_txt.tag_bind('unknown', '<Button-1>', self._on_unknown_click)
         self.raw_txt.bind('<KeyRelease>', self._unmark_unknown, add='+')
         self.raw_txt.bind('<<Modified>>', self._on_raw_modified, add='+')
+        # токены: слово, принятое подсказкой, привязано к пункту (подсвечено)
+        self.raw_txt.tag_configure('token', underline=1, foreground='#1f7a3f')
+        self.raw_txt.tag_bind('token', '<Enter>', self._on_token_enter)
+        self._token_words: dict[str, tuple[str, str]] = {}   # тег → (слово, во что превратится)
+        self._token_seq = 0
         f.pack(fill='both', expand=True)
         from .hintbox import HintBox
         self.hint_box = HintBox(self, self.raw_txt)
@@ -623,18 +628,46 @@ class App:
                      f'в буфере прежний — нажмите «Копировать»')
 
     # ---------- живой протокол ----------
+    def bind_token(self, start: str, end: str, code: str, becomes: str = ''):
+        """Привязать слово записи к пункту: подсветка и тег с кодом."""
+        t = self.raw_txt
+        self._token_seq += 1
+        tag = f'tok:{code}#{self._token_seq}'
+        t.tag_add('token', start, end)
+        t.tag_add(tag, start, end)
+        self._token_words[tag] = (t.get(start, end), becomes)
+
+    def _check_tokens(self):
+        """Слово токена изменили (набор внутри, удаление части) — привязку снять."""
+        t = self.raw_txt
+        for tag, (word, _) in list(self._token_words.items()):
+            r = t.tag_ranges(tag)
+            if len(r) != 2 or t.get(r[0], r[1]) != word:
+                for i in range(0, len(r), 2):
+                    t.tag_remove('token', r[i], r[i + 1])
+                t.tag_delete(tag)
+                del self._token_words[tag]
+
     def tokens(self) -> list[tuple[str, str]]:
         """Слова записи, привязанные к пунктам принятой подсказкой."""
+        self._check_tokens()
         t, out = self.raw_txt, []
-        for tag in t.tag_names():
-            if tag.startswith('tok:'):
-                r = t.tag_ranges(tag)
-                out += [(t.get(r[i], r[i + 1]), tag[4:]) for i in range(0, len(r), 2)]
+        for tag in self._token_words:
+            r = t.tag_ranges(tag)
+            out.append((t.get(r[0], r[1]), tag[4:].split('#')[0]))
         return out
+
+    def _on_token_enter(self, e):
+        t = self.raw_txt
+        at = t.index(f'@{e.x},{e.y}')
+        tag = next((g for g in t.tag_names(at) if g in self._token_words), None)
+        if tag and self._token_words[tag][1]:
+            self.status_lbl.configure(text=f'→ {self._token_words[tag][1]}')
 
     def _on_raw_modified(self, e=None):
         if self.raw_txt.edit_modified():
             self.raw_txt.edit_modified(False)
+            self._check_tokens()
             self._schedule_live()
 
     def _schedule_live(self):
@@ -784,6 +817,9 @@ class App:
             return
         hit = self._hits[index]
         word = self._add_word
+        if word:            # для слова записи: привязать и запомнить — протокол соберётся сам
+            self._bind_word(word, hit.code)
+            return
         old = self.out_txt.get('1.0', 'end-1c')
         res = self.ctl.add_item(old, hit.code, word=word)
         self._apply_added(old, res.text, res.line)
@@ -794,6 +830,30 @@ class App:
             self._show_learned(word)
         else:
             self._ask_learning(res.code, res.candidates)
+
+    def _bind_word(self, word: str, code: str):
+        """«Добавить пункт» к слову записи: слово — токен и слово врача в словаре;
+        строка в протокол не вставляется, ничего не копируется."""
+        t = self.raw_txt
+        r = t.tag_ranges('unknown')
+        span = next(((r[i], r[i + 1]) for i in range(0, len(r), 2)
+                     if t.get(r[i], r[i + 1]) == word), None)
+        if span is None:
+            at = t.search(word, '1.0', 'end')
+            span = (at, f'{at}+{len(word)}c') if at else None
+        status = self.ctl.bind_word(word, code)
+        self._close_add()
+        if span:
+            t.tag_remove('unknown', *span)
+            item = self.ctl.workbook.by_id[code]
+            group = self.ctl.workbook.by_id.get(item.parent) if item.level == 3 and not item.orphan else None
+            from .addition import row_text
+            self.bind_token(span[0], span[1], code, row_text(item, group))
+        self._show_file_status()
+        self._show_learned(word)
+        self._live()                    # врач выбрал пункт — протокол сразу, без паузы
+        if not self.live_frozen:
+            self._status(status)
 
     def _apply_added(self, old: str, new: str, line: int):
         """Вставить/заменить строки в поле, не трогая остальной текст и его теги."""

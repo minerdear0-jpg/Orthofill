@@ -117,3 +117,68 @@ def test_live_unknown_underline(live):
     _type(live, 'лигатурная, квакозябра')
     _wait(live, 200)
     assert live.raw_txt.tag_ranges('unknown')
+
+
+# ---------- Task 4: токены ----------
+def _accept(app, text):
+    _type(app, text)
+    app.hint_box.update()
+    app.root.update()
+    assert app.hint_box.accept()
+    app.root.update()
+
+
+def test_accept_coded_hint_makes_token(live):
+    live.ctl.learn('торк', '4g3')
+    _accept(live, 'лигатурная, тор')
+    assert live.tokens() == [('торк', '4g3')]
+    assert 'token' in live.raw_txt.tag_names('1.13')
+
+
+def test_uncoded_hint_is_plain_text(live):
+    _accept(live, 'на верхн')
+    assert live.tokens() == []
+
+
+def test_typing_inside_token_unbinds(live):
+    live.ctl.learn('торк', '4g3')
+    _accept(live, 'тор')
+    live.raw_txt.insert('1.2', 'х')
+    live.root.update()
+    assert live.tokens() == [] and not live.raw_txt.tag_ranges('token')
+
+
+def test_typing_after_token_keeps_it(live):
+    live.ctl.learn('торк', '4g3')
+    _accept(live, 'тор')
+    _type(live, ', перепел')
+    assert live.tokens() == [('торк', '4g3')]
+
+
+def test_delete_part_unbinds(live):
+    live.ctl.learn('торк', '4g3')
+    _accept(live, 'тор')
+    live.raw_txt.delete('end-2c', 'end-1c')
+    live.root.update()
+    assert live.tokens() == []
+
+
+def test_token_feeds_live_protocol(live):
+    live.ctl.learn('торк', '4g3')
+    _accept(live, 'лигатурная, тор')
+    _wait(live)
+    assert 'третьего порядка' in _out(live) and not live.copied
+
+
+def test_add_for_word_binds_not_inserts(live):
+    _type(live, 'лигатурная, квакозябра')
+    _wait(live, 200)
+    assert live.raw_txt.tag_ranges('unknown')
+    live._open_add_for_word('квакозябра')
+    live.add_entry.insert(0, 'третьего')
+    live._on_add_query()
+    live._add_selected(0)
+    _wait(live)
+    assert 'третьего порядка' in _out(live) and not live.copied
+    assert any(e.word == 'квакозябра' for e in live.ctl.workbook.dictionary)
+    assert live.tokens() == [('квакозябра', '4g3')]

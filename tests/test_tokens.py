@@ -100,3 +100,10 @@ def test_find_unknown_for_draft_skips_tokens(ctl, order_xlsx):
     ctl.preview(raw, tokens=[('квакозябра', '4g3')])
     words = [w for *_, w in ctl.find_unknown(raw, tokens=[('квакозябра', '4g3')])]
     assert words == ['бармаглот']
+
+
+def test_token_and_same_dictionary_word_no_conflict(wb):
+    from orthofill.workbook import DictEntry
+    wb.dictionary.append(DictEntry('торк', 'Изгиб третьего порядка', '4g3'))
+    p = build_protocol(wb, 'лигатурная, торк', tokens=[('торк', '4g3')])
+    assert '4g3' in codes(p) and not any('несколько слов' in w for w in p.warnings)

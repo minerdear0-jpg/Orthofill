@@ -642,6 +642,8 @@ def _apply_dictionary(wb: Workbook, ctx: _Ctx) -> None:
             # «тяги перепел»: вариант, названный другим словом, главнее выученного
             # («лиса» = «Медведь» — то же слово: выученное главнее)
             continue
+        elif group.id in ctx.forced and ctx.forced[group.id] is it:
+            continue                    # то же слово и токеном, и в словаре — не спор
         elif group.id in ctx.forced:
             ctx.warn(f'«{group.text.strip()}»: несколько слов врача — взято первое по записи')
         else:
