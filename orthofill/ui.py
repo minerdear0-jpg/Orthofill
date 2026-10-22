@@ -270,6 +270,8 @@ class App:
         self._confirmed_lines: set[str] = set()   # строки подтверждённой записи (новый пациент?)
         for seq in ('<KeyRelease>', '<ButtonRelease-1>'):
             self.raw_txt.bind(seq, lambda e: self._canvas_highlight(), add='+')
+        from .gutters import Gutters
+        self.gutters = Gutters(self)        # 0.5 b7: номера строк записи и «откуда»
 
         # Строка статуса
         st = ttk.Frame(r, padding=(12, 4, 12, 8))
@@ -685,6 +687,7 @@ class App:
         t.edit_reset()
         t.edit_modified(False)
         self._canvas_highlight()
+        self.gutters.refresh()
 
     def _canvas_capture(self):
         """Правки врача на холсте — сравнением поля протокола с последней отрисовкой."""
@@ -1837,6 +1840,7 @@ class App:
             self.ctl.track('ui', name='review_close' if prev == 'review' else 'drawer_close')
         mode, self.mode = self.mode, None           # раскладка — заново под режим
         self._relayout(mode or 'wide')
+        self.gutters.show(bool(self.ctl.shell_mode and self.ctl.workbook is not None))
         self.shell_box.update()
         self._schedule_live()
 
