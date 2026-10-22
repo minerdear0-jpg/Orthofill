@@ -146,6 +146,16 @@ class Telemetry:
     def _segments(self) -> list[Path]:
         return sorted(self.dir.glob('seg-*.jsonl'))
 
+    def _new_segment(self) -> Path:
+        """Имя нового сегмента: время + счётчик — часы Windows идут шагами ~15 мс,
+        два сегмента в один шаг иначе получили бы одно имя. Порядок имён — порядок событий."""
+        self._seq = getattr(self, '_seq', 0) + 1
+        while True:
+            p = self.dir / f'seg-{time.time_ns():020d}-{self._seq:06d}.jsonl.open'
+            if not p.exists() and not p.with_suffix('').exists():
+                return p
+            self._seq += 1
+
     def _roll(self) -> None:
         if self._open is not None:
             try:
@@ -171,7 +181,7 @@ class Telemetry:
                 try:
                     if self._open is None:
                         self.dir.mkdir(parents=True, exist_ok=True)
-                        self._open = self.dir / f'seg-{time.time_ns():020d}.jsonl.open'
+                        self._open = self._new_segment()
                     with self._open.open('a', encoding='utf-8') as f:
                         f.write(line + '\n')
                     self._open_lines += 1

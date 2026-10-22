@@ -201,3 +201,20 @@ def test_rejected_segment_does_not_block(rx, tmp_path):
     assert _wait(lambda: any(e['event'] == 'next' for e in rx.events))
     assert t.status().overflowed == 1
     t.close()
+
+
+def test_segment_names_unique_same_tick(tmp_path, monkeypatch):
+    """Сборка на Windows: часы идут шагами ~15 мс — два сегмента в один шаг
+    получали одно имя (на Linux второй переименованием затирал бы первый)."""
+    import orthofill.telemetry as tm
+    monkeypatch.setattr(tm.time, 'time_ns', lambda: 1_700_000_000_000_000_000)
+    dead = f'https://127.0.0.1:{free_port()}'
+    t = Telemetry(_cfg(dead), tmp_path)
+    t.batch = 5
+    for i in range(23):
+        t.put({'event': 'x', 'n': i})
+    t.close()
+    segs = sorted(tmp_path.glob('seg-*.jsonl'))
+    lines = [json.loads(s) for p in segs for s in p.read_text(encoding='utf-8').splitlines()]
+    assert len(segs) == 5 and sorted(e['n'] for e in lines) == list(range(23))
+    assert [e['n'] for e in lines] == list(range(23))      # порядок сегментов — порядок событий
