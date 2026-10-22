@@ -8,3 +8,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 *.spec
+diagnostics/
+orthofill-errors.log
+orthofill/_build.py
+diag/

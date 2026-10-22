@@ -7,7 +7,7 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent))  # legacy/
 import ortodont_v4 as o
 
 U, L = 'upper', 'lower'
@@ -74,7 +74,7 @@ def test_labels_cyrillic_c():
     assert o.parse_wire_from_label('на нижней челюсти 0.014" NiTi') == (L, ('14', None), 'NiTi')
 
 def test_reference_xlsx():
-    xlsx = Path(__file__).with_name('order.xlsx')
+    xlsx = Path(__file__).parent.parent / "order.xlsx"
     assert o.run_tests(str(xlsx), o.load_config()) == 0
 
 if __name__ == '__main__':
