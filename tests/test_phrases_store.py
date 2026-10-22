@@ -58,7 +58,7 @@ def test_migrate_v3_to_v4(tmp_path):
     con.commit()
     con.close()
     j = Journal(db)
-    assert j._db.execute('PRAGMA user_version').fetchone()[0] == 4
+    assert j._db.execute('PRAGMA user_version').fetchone()[0] == 5
     j._db.execute('SELECT name, template, uses FROM phrases')
 
 

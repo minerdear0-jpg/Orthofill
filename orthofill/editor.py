@@ -565,6 +565,12 @@ class EditorWindow:
                        command=lambda: self._renumber(code)).pack(side='left', padx=(10, 0))
         self.code_err = ttk.Label(p, text='', foreground=WARN_TEXT, wraplength=360)
         self.code_err.pack(anchor='w')
+        self.star_var = None
+        if kind != 'section':       # «*» в ID_CLASS: само в протокол (у группы — её вариант)
+            self.star_var = tk.BooleanVar(value=it.star)
+            ttk.Checkbutton(p, text='Обязательное (*) — сразу в протокол',
+                            variable=self.star_var,
+                            command=self._on_star).pack(anchor='w', pady=(4, 0))
 
         # текст
         ttk.Label(p, text='Название' if kind in ('section', 'group') else 'Текст в протоколе',
@@ -940,6 +946,11 @@ class EditorWindow:
         code = self._props_code
         value = next(k for k, v in _COMBINE.items() if v == self.combine_var.get())
         self.draft.set_combine(code, value)
+        self._done(code)
+
+    def _on_star(self):
+        code = self._props_code
+        self.draft.set_prop(code, 'star', bool(self.star_var.get()))
         self._done(code)
 
     def _on_when(self):

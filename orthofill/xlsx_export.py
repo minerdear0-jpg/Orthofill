@@ -29,7 +29,8 @@ def export_workbook(wb: Workbook, path: Path) -> None:
         ref_rows.append((_num(case.case_id), case.raw, None, None))
         ref_rows += [(None, None, _num(code) if code else None, text) for code, text in case.lines]
     for i in range(max(len(wb.items), len(ref_rows))):
-        a = (_num(wb.items[i].id), wb.items[i].text) if i < len(wb.items) else (None, None)
+        a = ((f'{wb.items[i].id}*' if wb.items[i].star else _num(wb.items[i].id)), wb.items[i].text) \
+            if i < len(wb.items) else (None, None)
         ws.append(list(a) + list(ref_rows[i] if i < len(ref_rows) else (None,) * 4))
 
     st = xl.create_sheet(SETTINGS_SHEET)

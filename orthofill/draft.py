@@ -170,7 +170,7 @@ class Draft:
         self.ops.append(('text', code, old, text))
 
     def set_prop(self, code: str, name: str, value) -> None:
-        if name not in ('method', 'when', 'default', 'words'):
+        if name not in ('method', 'when', 'default', 'words', 'star'):
             raise ValueError(name)
         self._begin()
         setattr(self.wb.by_id[code], name, value)

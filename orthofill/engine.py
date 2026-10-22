@@ -121,12 +121,26 @@ def _ref_evidence(wb: Workbook) -> list[tuple[set[str], set[str]]]:
     return out
 
 
+def star_default(group: Item) -> list[Item]:
+    """Варианты группы по умолчанию в пресете со «*»: отмеченные звёздочкой (группа «ИЛИ» —
+    первый), звёздочка у самой группы — её первый вариант."""
+    marked = [c for c in group.children if c.star]
+    if not marked and group.star and group.children:
+        marked = group.children[:1]
+    return marked if group.combine == 'and' else marked[:1]
+
+
 def _effective_when(wb: Workbook) -> dict[str, str]:
     """«Когда в протоколе» для отдельных пунктов: заданное или угаданное заново
     по текущим эталонам (угаданное не хранится — меняется с эталонами)."""
-    refs = _ref_evidence(wb)
-    out = {it.id: it.when or _guess_when(it, refs) for it in wb.items
-           if not it.children and it.level == 2 and not it.orphan}
+    if wb.star_mode:            # «*» в ID_CLASS — только отмеченное, без угадывания
+        out = {it.id: 'always' if it.star else (it.when if it.when in ('always', 'condition')
+                                                 else 'mentioned')
+               for it in wb.items if not it.children and it.level == 2 and not it.orphan}
+    else:
+        refs = _ref_evidence(wb)
+        out = {it.id: it.when or _guess_when(it, refs) for it in wb.items
+               if not it.children and it.level == 2 and not it.orphan}
     for it in wb.items:             # пункт-сирота: по угаданному условию или по упоминанию
         if it.orphan:
             out[it.id] = it.when or ('condition' if guess_condition(it, wb) else 'mentioned')
@@ -589,7 +603,10 @@ def _select_complaint(section: Item, ctx: _Ctx) -> Item | None:
             hit = _first(ch, lambda t: option_key in t)
             if hit:
                 return hit
-    default = _first(ch, lambda t: re.search(r'не\s+пред[ъь]явл', t)) or (ch[0] if ch else None)
+    if ctx.wb is not None and ctx.wb.star_mode:     # «*»: жалоба по умолчанию — только отмеченная
+        default = next((c for c in ch if c.star), None)
+    else:
+        default = _first(ch, lambda t: re.search(r'не\s+пред[ъь]явл', t)) or (ch[0] if ch else None)
     # Новые жалобы ищем только в том, что написано после «жалобы…»,
     # иначе «брекет-система удовлетворительная» дала бы «на отклеивание брекета»
     said = ctx.f['complaint_text']
@@ -599,7 +616,8 @@ def _select_complaint(section: Item, ctx: _Ctx) -> Item | None:
             return hit
         ctx.warn(f'жалоба не распознана: «{said}» — выберите вручную')
         return default
-    ctx.default('жалоб нет')
+    if default is not None:
+        ctx.default('жалоб нет')
     return default
 
 
@@ -812,6 +830,20 @@ def _select_rule_or_default(group: Item, ctx: _Ctx):
         ctx.flag(group.id, 'челюсть не указана — дуга на обеих')
     if sel and rule_kind(group) is None:
         ctx.flag(group.id, 'выбрано по словам записи — проверьте')
+    if ctx.wb is not None and ctx.wb.star_mode:
+        # «*»: само в отчёт — только отмеченный вариант; правила-умолчания выключены
+        if sel and record:
+            _pick(ctx, group, sel, record)
+            return sel
+        del ctx.defaults[n_def:]
+        marked = star_default(group)
+        if not marked:
+            if sel is not None and not record and len(ctx.warnings) == n_warn:
+                ctx.flags.pop(group.id, None)
+            return None
+        ctx.default(f'{group.text.strip()} {", ".join(c.text.strip() for c in marked)}')
+        _pick(ctx, group, marked, False)
+        return marked if group.combine == 'and' else marked[0]
     target = group.default and next((c for c in group.children if c.id == group.default), None)
     if not target or len(ctx.warnings) > n_warn:
         _pick(ctx, group, sel, record)
