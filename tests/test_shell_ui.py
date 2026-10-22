@@ -168,6 +168,13 @@ def _dwell(sh, expect: bool = True):
         time.sleep(0.02)
 
 
+def _siblings(sh):
+    """Соседи уровня без ожидания таймера (его проверяет test_dwell_opens_siblings):
+    на общем экране окно теста может потерять фокус, и список закроется."""
+    sh.shell_box._open_siblings()
+    sh.root.update()
+
+
 def test_arrows_move_by_level(sh):
     _line_at(sh, ('4', '4b', '4b5'))
     line = _raw(sh)
@@ -202,7 +209,7 @@ def test_replace_level_keeps_tail(sh):
     _line_at(sh, ('4', '4b', '4b5'))
     _key(sh, 'Left')
     _key(sh, 'Left')                          # на «Смена дуги на верхней челюсти»
-    _dwell(sh)
+    _siblings(sh)
     sb = sh.shell_box
     sb.selected = [c[-1] for c in sb.choices].index('4c')
     _key(sh, 'Return')
@@ -212,7 +219,7 @@ def test_replace_level_keeps_tail(sh):
 def test_replace_leaf(sh):
     _line_at(sh, ('4', '4b', '4b5'))
     _key(sh, 'Left')
-    _dwell(sh)
+    _siblings(sh)
     sb = sh.shell_box
     sb.selected = [c[-1] for c in sb.choices].index('4b18')
     _key(sh, 'Return')
@@ -296,7 +303,7 @@ def test_click_in_siblings_keeps_tail(sh):
     _line_at(sh, ('4', '4b', '4b5'))
     _key(sh, 'Left')
     _key(sh, 'Left')
-    _dwell(sh)
+    _siblings(sh)
     sb = sh.shell_box
     k = [c[-1] for c in sb.choices].index('4c')
     sb._click(k)
@@ -308,7 +315,7 @@ def test_click_in_siblings_keeps_tail(sh):
     sh.raw_txt.delete('1.0', 'end')
     _line_at(sh, ('4', '4b', '4b5'))
     _key(sh, 'Left')
-    _dwell(sh)
+    _siblings(sh)
     sb._click([c[-1] for c in sb.choices].index('4b18'))
     assert _raw(sh) == format_path(_wb(sh), ('4', '4b', '4b18'))
 
