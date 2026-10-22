@@ -205,7 +205,8 @@ def test_ctrl_o_in_editor_does_not_import(app, monkeypatch):
     ed = app.open_editor('4a')
 
     class E:
-        keysym, keycode, state, widget = 'Cyrillic_shcha', 32, 4, ed.tree
+        keysym, state, widget = 'Cyrillic_shcha', 4, ed.tree
+        keycode = 79 if sys.platform == 'win32' else 32      # физическая «O»
     app._on_ctrl_key(E())
     assert not called
 
