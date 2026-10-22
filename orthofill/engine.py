@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from .logic import Facts, evaluate
 from .methods import METHOD_LABELS
 from .parse import arches_in, extract_facts, parse_wire_from_label
 from .render import Row, render_rows
@@ -88,8 +89,33 @@ def _effective_when(wb: Workbook) -> dict[str, str]:
     """«Когда в протоколе» для отдельных пунктов: заданное или угаданное заново
     по текущим эталонам (угаданное не хранится — меняется с эталонами)."""
     refs = [{code for code, _ in case.lines} for case in wb.references if case.lines]
-    return {it.id: it.when or _guess_when(it, refs) for it in wb.items
-            if not it.children and it.level == 2 and not it.orphan}
+    out = {it.id: it.when or _guess_when(it, refs) for it in wb.items
+           if not it.children and it.level == 2 and not it.orphan}
+    for it in wb.items:             # пункт-сирота: по угаданному условию или по упоминанию
+        if it.orphan:
+            out[it.id] = it.when or ('condition' if guess_condition(it, wb) else 'mentioned')
+    return out
+
+
+def guess_condition(item: Item, wb: Workbook) -> dict | None:
+    """Условие, угаданное по тексту пункта-сироты (было зашито в коде):
+    фиксация лигатурами — при лигатурной системе, клипсы — при самолигирующей."""
+    if not item.orphan:
+        return None
+    t = norm(item.text)
+    if 'фиксаци' in t and 'лигатур' in t:
+        pick = lambda v: 'лигатур' in v and 'самолигир' not in v     # noqa: E731
+    elif 'клипс' in t:
+        pick = lambda v: 'самолигир' in v                             # noqa: E731
+    else:
+        return None
+    group = next((g for g in wb.items if g.children and rule_kind(g) == 'system'), None)
+    variant = group and _first(group.children, pick)
+    return {'all': [{'field': group.id, 'is': variant.id}]} if variant else None
+
+
+def effective_condition(item: Item, wb: Workbook) -> dict | None:
+    return item.condition or guess_condition(item, wb)
 
 
 def guess_settings(wb: Workbook) -> None:
@@ -103,6 +129,11 @@ def guess_settings(wb: Workbook) -> None:
                 it.method = _guess_kind(it) or 'words'
         elif it.level == 2 and not it.orphan and it.when is None:
             it.when = _guess_when(it, refs)
+        elif it.orphan and it.when is None:
+            cond = guess_condition(it, wb)
+            if cond and it.condition is None:
+                it.condition = cond
+            it.when = 'condition' if cond else 'mentioned'
 
 
 def _arch_of(group: Item) -> str | None:
@@ -174,6 +205,8 @@ class _Ctx:
         self.forced: dict[str, Item] = {}
         self.forced_singles: set[str] = set()
         self.dictionary_hits: list[str] = []
+        # группа → (выбранные варианты, выбрано по записи?) — факты для условий
+        self.picked: dict[str, tuple[list[Item], bool]] = {}
 
     def flag(self, code: str, reason: str):
         reasons = self.flags.setdefault(code, [])
@@ -310,8 +343,7 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
                 if not _cancelled(ctx.n, word_stem(words[0])):
                     hits.append(c)
         if len(hits) > 1:
-            names = ', '.join(f'«{c.text}»' for c in hits)
-            ctx.warn(f'эластики: несколько вариантов ({names}) — в протокол попал только первый')
+            return _several(group, hits, ctx, 'эластики')
         if hits:
             return hits[0]
         if f['mentions_elastics'] and not _cancelled(ctx.n, r'эластик|резин|тяг'):
@@ -320,10 +352,15 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
 
     if kind == 'adjust':
         stems = {1: 'перв', 2: 'втор', 3: 'трет'}
+        hits = []
         for order in f['wire_adjustments']:
             hit = _first(ch, lambda t: stems[order] in t)
-            if hit:
-                return hit
+            if hit and hit not in hits:
+                hits.append(hit)
+        if len(hits) > 1:
+            return _several(group, hits, ctx, 'юстировка')
+        if hits:
+            return hits[0]
         if re.search(r'юстир|изгиб', ctx.n):
             ctx.warn('юстировка: вид изгиба не распознан — допишите вручную')
         return None
@@ -433,10 +470,46 @@ def _select_new_group(group: Item, ctx: _Ctx) -> list[Item] | Item | None:
         scored.append((s, c))
     best = max((s for s, _ in scored), default=0)
     top = [c for s, c in scored if s == best]
-    if ch and (best == 0 or len(top) > 1):
+    if ch and best == 0:
         ctx.warn(f'«{title}»: вариант не распознан — допишите вручную')
         return []
-    return top[0] if ch else []
+    if group.combine == 'and':
+        hits = [c for s, c in scored if s > 0]
+        hits = _distinct(hits, phrase) if len(hits) > 1 else hits
+    elif len(top) > 1:
+        hits = _distinct(top, phrase)
+    else:
+        return top[0] if ch else []
+    if not hits:            # совпало только общее («тяга к минивинту» без сегмента)
+        ctx.warn(f'«{title}»: вариант не распознан — допишите вручную')
+        return []
+    if len(hits) == 1:
+        return hits[0]
+    return _several(group, hits, ctx, f'«{title}»')
+
+
+def _distinct(cands: list[Item], phrase: str) -> list[Item]:
+    """Варианты, у которых в записи совпало своё — слово или число, которого
+    нет у остальных кандидатов («ирригатор» / «ершик», а не общее «минивинт»)."""
+    def marks(c: Item) -> set[str]:
+        return set(_stems(c.text)) | set(re.findall(r'\d+', c.text))
+    nums = set(re.findall(r'\d+', phrase))
+    out = []
+    for c in cands:
+        others = set.intersection(*(marks(o) for o in cands if o is not c))
+        own = marks(c) - others
+        if any(m in nums if m.isdigit() else stem_in(m, phrase) for m in own):
+            out.append(c)
+    return out
+
+
+def _several(group: Item, hits: list[Item], ctx: _Ctx, topic: str) -> list[Item]:
+    """Упомянуто несколько вариантов: И — все; ИЛИ — все с «проверьте»
+    (программа не выбирает за врача)."""
+    if group.combine != 'and':
+        names = ', '.join(f'«{c.text.strip()}»' for c in hits)
+        ctx.warn(f'{topic}: несколько вариантов ({names}) — проверьте')
+    return hits
 
 
 def _select_complaint(section: Item, ctx: _Ctx) -> Item | None:
@@ -540,13 +613,33 @@ def _apply_dictionary(wb: Workbook, ctx: _Ctx) -> None:
             ctx.forced[group.id] = it
 
 
-def _orphan_applies(item: Item, ctx: _Ctx) -> bool:
-    t, st = norm(item.text), ctx.f['system_type']
-    if 'фиксаци' in t and 'лигатур' in t:
-        return st == 'ligature'
-    if 'клипс' in t:
-        return st == 'self_ligating'
-    return _best_by_words([item], ctx.n) is not None
+def _shown(item: Item, when: str, said: _Said, facts: Facts, ctx: _Ctx) -> bool:
+    """Выводится ли отдельный пункт: «всегда» / «если упомянут» / «по условию»;
+    условие выводит строку только при «да». Слово врача — сказано: строка есть,
+    а если условие против — «проверьте» (противоречие показать, не решать)."""
+    cond = effective_condition(item, ctx.wb)
+    ok = evaluate(cond, facts) is True
+    if item.id in ctx.forced_singles:
+        if cond is not None and not ok:
+            ctx.flag(item.id, 'по условию этой строки быть не должно — проверьте')
+        return True
+    if when == 'always':
+        return ok
+    if when == 'mentioned':
+        return item.id in said and ok
+    return cond is not None and ok
+
+
+def _check_pairs(wb: Workbook, lines: list[tuple[str, str]], ctx: _Ctx) -> None:
+    """Пары «не вместе»: обе строки в протоколе — обеим «проверьте»."""
+    have = {c for c, _ in lines}
+    for a, b in wb.not_together:
+        if a in have and b in have:
+            ta, tb = (' '.join(wb.by_id[c].text.split())[:50] for c in (a, b))
+            msg = f'«{ta}» и «{tb}» не бывают вместе — проверьте'
+            ctx.warn(msg)
+            ctx.flag(a, msg)
+            ctx.flag(b, msg)
 
 
 def build_protocol(wb: Workbook, raw: str) -> Protocol:
@@ -561,36 +654,44 @@ def build_protocol(wb: Workbook, raw: str) -> Protocol:
         ctx.default('дуга на обеих челюстях (челюсть не указана)')
     when = _effective_when(wb)
     _apply_dictionary(wb, ctx)
-    singles = {it.id: (when[it.id] == 'always' or it.id in ctx.forced_singles
-                       or _single_mentioned(it, ctx))
-               for s in wb.sections for it in s.children
-               if not it.children and not it.orphan}
-    ctx.mentioned_singles = [wb.by_id[i] for i, ok in singles.items()
-                             if ok and when[i] != 'always']
+    said = _Said(ctx)
+    ctx.mentioned_singles = [it for s in wb.sections for it in s.children
+                             if not it.children and not it.orphan and when[it.id] != 'always'
+                             and it.id in said]
+    # проход 1: все группы (факты для условий не зависят от порядка разделов)
+    complaint = {s.id for s in wb.sections if norm(s.text).startswith('жалоб')}
+    chosen: dict[str, object] = {}
+    for s in wb.sections:           # порядок разделов — как раньше (строка «по умолчанию»)
+        if s.id in complaint:
+            ctx.current = s.id
+            chosen[s.id] = _select_complaint(s, ctx)
+            ctx.current = None
+            continue
+        for item in s.children:
+            if item.children:
+                chosen[item.id] = _select_or_default(item, ctx)
+    facts = _facts(ctx, said)
+    # проход 2: строки по разделам
     lines: list[tuple[str, str]] = []
     for section in wb.sections:
         out: list[tuple[str, str]] = []
-        if norm(section.text).startswith('жалоб'):
-            ctx.current = section.id
-            sel = _select_complaint(section, ctx)
-            ctx.current = None
+        if section.id in complaint:
+            sel = chosen[section.id]
             if sel:
                 out.append((sel.id, sel.text))
         else:
             for item in section.children:
                 if item.children:
-                    sel = _select_or_default(item, ctx)
+                    sel = chosen[item.id]
                     if sel is not None:     # [] — группа упомянута, вариант не выбран
                         out.append((item.id, item.text))
                         for c in (sel if isinstance(sel, list) else [sel]):
                             out.append((c.id, c.text))
-                elif item.orphan:
-                    if item.id in ctx.forced_singles or _orphan_applies(item, ctx):
-                        out.append((item.id, item.text))
-                elif singles.get(item.id):
+                elif _shown(item, when[item.id], said, facts, ctx):
                     out.append((item.id, item.text))
         if out:
             lines += [(section.id, section.text)] + out
+    _check_pairs(wb, lines, ctx)
     if ctx.f['wire_hint'] and not ctx.f['wires']:
         ctx.warn('дуга: упоминание не распознано — проверьте вручную')
     return Protocol(lines, ctx.warnings, ctx.defaults, render_rows(wb, lines, ctx.flags),
@@ -601,7 +702,13 @@ def _select_or_default(group: Item, ctx: _Ctx):
     """Выбор правилом; если врач не написал (правило ничего не выбрало или
     подставило своё «по умолчанию») — вариант по умолчанию из пресета."""
     if group.id in ctx.forced:          # слово врача — без правила и без «проверьте»
+        ctx.picked[group.id] = ([ctx.forced[group.id]], True)
         return ctx.forced[group.id]
+    sel = _select_rule_or_default(group, ctx)
+    return sel
+
+
+def _select_rule_or_default(group: Item, ctx: _Ctx):
     n_def, n_warn = len(ctx.defaults), len(ctx.warnings)
     ctx.current = group.id
     try:
@@ -613,13 +720,50 @@ def _select_or_default(group: Item, ctx: _Ctx):
     if sel and rule_kind(group) is None:
         ctx.flag(group.id, 'выбрано по словам записи — проверьте')
     target = group.default and next((c for c in group.children if c.id == group.default), None)
+    # факт для условий — только выбор по записи (не умолчание правила или пресета)
+    record = len(ctx.defaults) == n_def
     if not target or len(ctx.warnings) > n_warn:
+        _pick(ctx, group, sel, record)
         return sel
     if sel is None or len(ctx.defaults) > n_def:
         del ctx.defaults[n_def:]
         ctx.default(f'{group.text.strip()} {target.text.strip()}')
+        _pick(ctx, group, [target], False)
         return target
+    _pick(ctx, group, sel, record)
     return sel
+
+
+def _pick(ctx: _Ctx, group: Item, sel, record: bool) -> None:
+    if sel is not None:
+        ctx.picked[group.id] = (sel if isinstance(sel, list) else [sel], record)
+
+
+class _Said:
+    """Упомянут ли в записи пункт (его слова или слово врача) или группа (выбор
+    по записи). Считается по запросу и запоминается: проверка слов — самое
+    дорогое в разборе, а пунктам «всегда» она не нужна."""
+
+    def __init__(self, ctx: _Ctx):
+        self.ctx, self._memo = ctx, {}
+
+    def __contains__(self, code: str) -> bool:
+        if code not in self._memo:
+            ctx, it = self.ctx, self.ctx.wb.by_id.get(code)
+            if code in ctx.picked:
+                self._memo[code] = ctx.picked[code][1]
+            elif it is None or it.children:
+                self._memo[code] = False
+            else:
+                self._memo[code] = it.id in ctx.forced_singles or (
+                    _best_by_words([it], ctx.n) is not None if it.orphan
+                    else _single_mentioned(it, ctx))
+        return self._memo[code]
+
+
+def _facts(ctx: _Ctx, said: _Said) -> Facts:
+    known = {g: {c.id for c in sel} for g, (sel, rec) in ctx.picked.items() if rec and sel}
+    return Facts(known, said)
 
 
 def _key(line: tuple[str, str]) -> tuple[str, str]:
