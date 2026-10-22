@@ -38,6 +38,7 @@ class HintBox:
         self._cmd = False               # подсказки — фразы по «.имя»
         self.fields: list[tuple[str, str, list[str]]] = []   # поля раскрытой фразы (метки, значения)
         self.field_i = -1
+        self._literals: list[tuple[str, str, str]] = []
         text.tag_configure('field', background='#e3eef7')
         self._view = None
         self._size = None
@@ -53,6 +54,8 @@ class HintBox:
                         ('<Right>', self._right), ('<Control-Right>', self._ctrl_right)):
             text.bind(seq, fn)
         text.bind('<FocusOut>', lambda e: self.close(), add='+')
+        for ev in ('<<Undo>>', '<<Redo>>'):        # отмена — режим полей устарел
+            text.bind(ev, lambda e: self.close(), add='+')
         text.bind('<Button-1>', lambda e: self.close(), add='+')
         # прокрутка поля — закрыть (список остался бы в чужом месте)
         self._yscroll = text.cget('yscrollcommand')
@@ -85,8 +88,10 @@ class HintBox:
             self.close()
             return
         if self.fields:                 # внутри раскрытой фразы: только подсветка полей
-            self._refresh_fields()
-            return
+            if self._phrase_intact():
+                self._refresh_fields()
+                return
+            self.close()                # фразу изменили вне полей — обычный режим
         t = self.text
         before = t.get('insert linestart', 'insert')
         after = t.get('insert', 'insert +1c')
@@ -296,12 +301,29 @@ class HintBox:
             t.mark_set(me, f'{start}+{e}c')
             t.mark_gravity(me, 'right')
             fields.append((ms, me, [v for v in parts if isinstance(v, list)][k]))
+        t.mark_set('phr_s', start)
+        t.mark_gravity('phr_s', 'left')
+        t.mark_set('phr_e', t.index('insert'))
+        t.mark_gravity('phr_e', 'right')
+        # неизменные куски фразы между полями — по ним видно, что фраза цела
+        bounds = ['phr_s'] + [m for ms, me, _ in fields for m in (ms, me)] + ['phr_e']
+        self._literals = [(a, b, t.get(a, b)) for a, b in zip(bounds[0::2], bounds[1::2])]
         self.app.ctl.count_phrase_use(name)
         if fields:
             self.fields = fields
             self._refresh_fields()
             self._activate_field(0)
         return True
+
+    def _phrase_intact(self) -> bool:
+        """Курсор внутри фразы и её неизменные куски на месте."""
+        t = self.text
+        try:
+            if t.compare('insert', '<', 'phr_s') or t.compare('insert', '>', 'phr_e'):
+                return False
+            return all(t.get(a, b) == text for a, b, text in self._literals)
+        except tk.TclError:
+            return False
 
     def _refresh_fields(self):
         t = self.text
@@ -338,8 +360,12 @@ class HintBox:
             return False
         t = self.text
         ms, me, _ = self.fields[self.field_i]
+        t.configure(autoseparators=False)   # одна отмена — прежнее значение поля
+        t.edit_separator()
         t.delete(ms, me)
         t.insert(ms, self.items[i].word, ())
+        t.edit_separator()
+        t.configure(autoseparators=True)
         self._next_field()
         return True
 
@@ -347,13 +373,21 @@ class HintBox:
         if self.field_i + 1 < len(self.fields):
             self._activate_field(self.field_i + 1)
         else:
-            self._end_fields()
+            self._end_fields(to_end=True)
 
-    def _end_fields(self):
+    def _end_fields(self, to_end: bool = False):
+        """Выйти из полей; to_end — курсор после фразы (Esc, Tab, Enter): набор
+        дальше не попадает внутрь неё."""
         t = self.text
         t.tag_remove('field', '1.0', 'end')
         t.tag_remove('sel', '1.0', 'end')
-        for ms, me, _ in self.fields:
+        if to_end:
+            try:
+                t.mark_set('insert', 'phr_e')
+            except tk.TclError:
+                pass
+        self._literals = []
+        for ms, me, _ in self.fields + [('phr_s', 'phr_e', None)]:
             for m in (ms, me):
                 try:
                     t.mark_unset(m)
@@ -405,7 +439,7 @@ class HintBox:
         if self.fields:
             if self.selected >= 0 and self._choose(self.selected):
                 return 'break'
-            self._end_fields()
+            self._end_fields(to_end=True)   # перенос строки — после фразы
             return None
         if self.items and self.selected >= 0 and self.accept():
             return 'break'
@@ -415,6 +449,8 @@ class HintBox:
     def _right(self, e):
         """→ принимает серый хвост (как в браузере и VS Code); иначе — курсор вправо."""
         if e is not None and e.state & (0x1 | 0x4):
+            return None
+        if self.fields:                     # в полях → — просто курсор
             return None
         if self.phrase:
             return 'break' if self.accept_phrase() else None
@@ -429,7 +465,10 @@ class HintBox:
         return None
 
     def _escape(self, e):
-        if self.items or self.phrase or self.fields:
+        if self.fields:
+            self._end_fields(to_end=True)
+            return 'break'
+        if self.items or self.phrase:
             self.close()
             return 'break'
         return None
@@ -457,7 +496,9 @@ class HintBox:
         size = (e.width, e.height)
         if size != self._size:
             self._size = size
-            if self.phrase:
+            if self.fields:
+                self.app.root.after_idle(lambda: self.fields and self._show_field_list())
+            elif self.phrase:
                 self.app.root.after_idle(lambda: self.phrase and self._show_phrase())
             elif self.items:
                 self.app.root.after_idle(lambda: self.items and self._show())

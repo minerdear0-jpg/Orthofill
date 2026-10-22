@@ -276,12 +276,20 @@ def _read_settings(ws, by_id: dict[str, Item]) -> tuple[list[str], list[str], li
 def _read_phrases(ws) -> tuple[list[Phrase], list[str]]:
     """Лист «Фразы»: Имя | Шаблон | Использовано."""
     from .phrases import parse_template
-    out, problems = [], []
+    out, problems, names = [], [], set()
     for rownum, row in enumerate(ws.iter_rows(min_row=2, max_col=3, values_only=True), start=2):
         name, template, uses = tuple(row) + (None,) * (3 - len(row))
         if name is None or not str(name).strip():
             continue
         name = str(name).strip().lstrip('.')
+        if name in names:
+            problems.append(f'{PHRASES_SHEET}!A{rownum}: фраза «{name}» уже есть выше')
+            continue
+        try:
+            uses = int(uses or 0)
+        except (TypeError, ValueError):
+            problems.append(f'{PHRASES_SHEET}!C{rownum}: «{uses}» — нужно число')
+            continue
         try:
             parse_template(str(template or ''))
         except ValueError as e:
@@ -290,7 +298,8 @@ def _read_phrases(ws) -> tuple[list[Phrase], list[str]]:
         if not str(template or '').strip():
             problems.append(f'{PHRASES_SHEET}!B{rownum}: у фразы «{name}» нет шаблона')
             continue
-        out.append(Phrase(name, str(template).strip(), int(uses or 0)))
+        names.add(name)
+        out.append(Phrase(name, str(template).strip(), uses))
     return out, problems
 
 

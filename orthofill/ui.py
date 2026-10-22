@@ -595,6 +595,7 @@ class App:
             return
         self._cancel_live()
         self._clear_tokens()                # коды токенов — от прежнего пресета
+        self._phrase_no_offer()             # предложение — для прежнего пресета
         out = self.out_txt.get('1.0', 'end-1c')
         edited = self.ctl.needs_confirm_regenerate(out)
         prev = self.ctl.preset_id
@@ -800,6 +801,10 @@ class App:
             self.phrase_lbl.configure(text=f'Вы часто пишете «{sample}» ({n} раз) — '
                                            f'сделать фразой «.{name}»?')
             self.phrase_bar.pack(anchor='w', fill='x', pady=(4, 0), after=self.status_lbl.master)
+
+    def _phrase_no_offer(self):
+        self._phrase_prop = None
+        self.phrase_bar.pack_forget()
 
     def _phrase_yes(self):
         if self._phrase_prop:
@@ -1232,6 +1237,7 @@ class App:
         — пересобрать (иначе пустой «показанный» протокол выглядит как ручная правка)."""
         self._cancel_live()
         self._clear_tokens()
+        self._phrase_no_offer()
         if self.raw_txt.get('1.0', 'end-1c').strip() and not self.live_frozen:
             self._live_show()
         elif not self.live_frozen:

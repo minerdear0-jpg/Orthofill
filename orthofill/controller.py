@@ -469,7 +469,7 @@ class Controller:
         wb = self.workbook
         if wb is None:
             return None
-        declined = set(json.loads(self.journal.get_setting('phrase_declined', '[]')))
+        declined = set(json.loads(self.journal.get_setting(f'phrase_declined:{self.preset_id}', '[]')))
         here = {shape_of(p) for p in phrases_of(raw)}
         for name, template, n in propose(self.journal.raw_notes(self.preset_id), wb.phrases):
             shape = shape_of(template)
@@ -488,9 +488,10 @@ class Controller:
     def decline_proposal(self, prop) -> None:
         import json
         from .phrases import shape_of
-        declined = json.loads(self.journal.get_setting('phrase_declined', '[]'))
+        key = f'phrase_declined:{self.preset_id}'        # «Нет» — для этого пресета
+        declined = json.loads(self.journal.get_setting(key, '[]'))
         declined.append(shape_of(prop[1]))
-        self.journal.set_setting('phrase_declined', json.dumps(declined, ensure_ascii=False))
+        self.journal.set_setting(key, json.dumps(declined, ensure_ascii=False))
 
     # ---------- редактор пресета ----------
     def open_draft(self, preset_id: int | None = None) -> Draft:

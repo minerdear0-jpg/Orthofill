@@ -69,3 +69,38 @@ def test_draft_keeps_phrases(ctl, order_xlsx):
     d.set_text('4a', 'Осмотр.')
     ctl.save_draft()
     assert ctl.workbook.phrases == [Phrase('замена', TPL, 0)]
+
+
+def _sheet_rows(tmp_path, order_xlsx, rows):
+    wb = load_workbook_file(order_xlsx)
+    export_workbook(wb, tmp_path / 'x.xlsx')
+    xl = openpyxl.load_workbook(tmp_path / 'x.xlsx')
+    for r in rows:
+        xl['Фразы'].append(r)
+    xl.save(tmp_path / 'x.xlsx')
+    return load_workbook_file(tmp_path / 'x.xlsx')
+
+
+def test_duplicate_phrase_name_is_problem(tmp_path, order_xlsx):
+    back = _sheet_rows(tmp_path, order_xlsx, [['акт', 'активация, {а|б}', 0], ['акт', 'активация', 0]])
+    assert any(p.startswith('Фразы!A3') and 'уже есть' in p for p in back.problems)
+
+
+def test_bad_uses_is_problem(tmp_path, order_xlsx):
+    back = _sheet_rows(tmp_path, order_xlsx, [['акт', 'активация, {а|б}', 'много']])
+    assert any(p.startswith('Фразы!C2') for p in back.problems)
+
+
+def test_declined_per_preset(ctl, order_xlsx, tmp_path):
+    import shutil
+    from test_phrases import NOTES as N
+    ctl.import_xlsx(order_xlsx)
+    for raw in N:
+        ctl.generate(raw)
+    ctl.decline_proposal(ctl.proposal(N[-1]))
+    other = tmp_path / 'b.xlsx'
+    shutil.copy(order_xlsx, other)
+    ctl.import_xlsx(other)
+    for raw in N:
+        ctl.generate(raw)
+    assert ctl.proposal(N[-1]) is not None

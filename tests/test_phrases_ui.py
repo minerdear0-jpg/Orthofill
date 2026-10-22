@@ -174,3 +174,70 @@ def test_save_draft_keeps_phrase_added_meanwhile(ctl, order_xlsx):
     d.set_text('4a', 'Осмотр.')
     ctl.save_draft()
     assert [p.name for p in ctl.workbook.phrases] == ['замена']
+
+
+# ---------- итоговая проверка ----------
+@pytest.mark.parametrize('exit_key', ['Escape', 'Tab2'])
+def test_exit_puts_cursor_after_phrase(ph, exit_key):
+    _expand(ph)
+    if exit_key == 'Tab2':
+        _key(ph, 'Tab')
+        _key(ph, 'Tab')
+    else:
+        _key(ph, 'Escape')
+    ph.raw_txt.insert('insert', ', перепел')
+    assert _raw(ph) == 'замена дуги верх 18х25 тма, перепел'
+
+
+def test_enter_in_fields_newline_after_phrase(ph):
+    _expand(ph)
+    _key(ph, 'Return')
+    assert _raw(ph) == 'замена дуги верх 18х25 тма\n'
+
+
+def test_select_all_retype_leaves_field_mode(ph):
+    _expand(ph)
+    ph.raw_txt.delete('1.0', 'end')
+    _type(ph, 'ab')
+    assert not ph.hint_box.fields
+    _key(ph, 'Tab')
+    assert _raw(ph).startswith('ab')
+
+
+def test_undo_leaves_field_mode(ph):
+    _expand(ph, '.зам')
+    ph.raw_txt.event_generate('<<Undo>>')
+    ph.root.update()
+    ph.hint_box.update()
+    assert not ph.hint_box.fields and not ph.raw_txt.tag_ranges('field')
+
+
+def test_resize_in_fields_no_false_tail(ph):
+    _expand(ph)
+    _key(ph, 'KeyPress', keysym='x')
+    ph.root.geometry(f'{ph.root.winfo_width() + 30}x{ph.root.winfo_height()}')
+    ph.root.update()
+    ph.root.update()
+    assert ph.hint_box.tail['text'] == ''
+    _key(ph, 'Right')
+    assert 'замена дуги x 18х25' in _raw(ph)
+
+
+def test_choose_is_one_undo(ph):
+    _expand(ph)
+    _key(ph, 'Down')
+    _key(ph, 'Down')
+    _key(ph, 'Return')
+    ph.raw_txt.edit_undo()
+    assert _raw(ph) == 'замена дуги верх 18х25 тма'
+
+
+def test_proposal_bar_hidden_on_preset_switch(app):
+    for raw in NOTES:
+        app.ctl.generate(raw)
+    app.raw_txt.insert('1.0', 'активация, замена дуги низ 18х25 тма')
+    app.generate()
+    app.root.update()
+    other = next(p.id for p in app.ctl.presets.list() if p.id != app.ctl.preset_id)
+    app.switch_to(other)
+    assert not app.phrase_bar.winfo_manager() and app._phrase_prop is None
