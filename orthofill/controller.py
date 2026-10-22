@@ -353,7 +353,7 @@ class Controller:
         return out
 
     def add_item(self, current_text: str, code: str, word: str | None = None) -> AddResult:
-        """Вставить пункт в протокол (правки врача целы) и сразу скопировать.
+        """Вставить пункт в протокол (правки врача целы); копирует только Ctrl+Enter.
         word — подчёркнутое слово, с которого начали: оно запоминается сразу."""
         wb = self.workbook
         new, line = insert_item(wb, current_text, code)
@@ -465,6 +465,10 @@ class Controller:
         self.workbook = self.presets.load(self.preset_id)
         self.journal.snapshot(self.workbook)
         self._refresh_status()
+
+    def confirm_shown(self, text: str) -> None:
+        """Показанный протокол — этот (подтверждённая правка, пересборка окна)."""
+        self._last_shown = text
 
     def needs_confirm_regenerate(self, current_text: str) -> bool:
         cur = current_text.strip()

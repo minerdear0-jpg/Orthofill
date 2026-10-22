@@ -19,7 +19,7 @@ def test_switch_says_clipboard_is_old(app):
     first = next(p.id for p in app.ctl.presets.list() if p.name == "order")
     app.switch_to(first)
     status = app.status_lbl["text"]
-    assert "в буфере прежний" in status and "Копировать" in status
+    assert "черновик" in status and "Ctrl+Enter" in status
 
 
 # ---------- 0.2 beta 2: вид протокола ----------

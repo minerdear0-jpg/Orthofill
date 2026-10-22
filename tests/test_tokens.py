@@ -43,7 +43,7 @@ def test_hint_codes(ctl, order_xlsx):
     ctl.import_xlsx(order_xlsx)
     ctl.learn('торк', '4g3')
     assert ctl.hints('тор')[0].code == '4g3'
-    assert next(h for h in ctl.hints('пере') if h.word == 'перепел').code == '4f1'
+    assert next(h for h in ctl.hints('пере') if h.word == 'перепел').code == ''   # только словарь
     assert next(h for h in ctl.hints('верхн') if h.word == 'верхней').code == ''
 
 

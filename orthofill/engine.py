@@ -684,6 +684,9 @@ def build_protocol(wb: Workbook, raw: str, tokens: list[tuple[str, str]] | None 
     код): разбираются как слова врача, но только для этой записи."""
     ctx = _Ctx(raw, wb)
     ctx.tokens = [DictEntry(w, wb.by_id[c].text, c) for w, c in (tokens or ()) if c in wb.by_id]
+    for w, c in tokens or ():
+        if c not in wb.by_id:
+            ctx.warn(f'слово «{w}» больше не находит пункт')
     if ctx.f['system_type'] is None:
         ctx.warn('тип системы не распознан (лигатурная / самолигирующая)')
     cl = ctx.f['classes']

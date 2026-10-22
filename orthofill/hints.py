@@ -78,8 +78,10 @@ def build_index(wb: Workbook, history: dict[str, int]) -> HintIndex:
         own = owners.get(word, set())
         return next(iter(own)) if len(own) == 1 else ''
 
+    # токен (привязка к пункту) — только слово словаря врача: слово пункта может
+    # быть случайным («области» → «…эрозия») — его смысл решает обычный разбор
     for w, _ in sorted(history.items(), key=lambda kv: (-kv[1], kv[0])):
-        add(w, rows[owner(w)] if owner(w) else '', 'history', owner(w))
+        add(w, rows[owner(w)] if owner(w) else '', 'history')
     for w in sorted(owners):
-        add(w, rows[owner(w)] if owner(w) else '', 'item', owner(w))
+        add(w, rows[owner(w)] if owner(w) else '', 'item')
     return HintIndex(entries)

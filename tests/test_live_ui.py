@@ -80,10 +80,12 @@ def test_keep_button_does_not_nag(live):
     _type(live, ', перепел')
     _wait(live)
     live._live_keep()
-    assert not live.live_bar.winfo_manager()
+    assert 'вручную' in live.live_label['text'] and not live.live_keep_btn.winfo_manager()
     _type(live, ', лиса')
     _wait(live)
-    assert not live.live_bar.winfo_manager() and 'моя правка' in _out(live)
+    # не спрашивает заново, но напоминание остаётся; правка цела
+    assert 'вручную' in live.live_label['text'] and not live.live_keep_btn.winfo_manager()
+    assert 'моя правка' in _out(live)
 
 
 def test_confirm_copies_edited(live):
@@ -182,3 +184,109 @@ def test_add_for_word_binds_not_inserts(live):
     assert 'третьего порядка' in _out(live) and not live.copied
     assert any(e.word == 'квакозябра' for e in live.ctl.workbook.dictionary)
     assert live.tokens() == [('квакозябра', '4g3')]
+
+
+# ---------- итоговая проверка ----------
+def test_added_line_is_a_hand_edit(live):
+    _type(live, 'лигатурная, перепел')
+    _wait(live)
+    live.add_entry.insert(0, 'третьего')
+    live._on_add_query()
+    live._add_selected(0)
+    _type(live, ', явка 4 нед')
+    _wait(live)
+    assert 'третьего порядка' in _out(live) and live.live_frozen
+
+
+def test_keep_leaves_indicator_and_empty_note_unfreezes(live):
+    _type(live, 'лигатурная')
+    _wait(live)
+    live.out_txt.insert('end', '\nмоя правка')
+    _type(live, ', перепел')
+    _wait(live)
+    live._live_keep()
+    assert live.live_bar.winfo_manager() and 'вручную' in live.live_label['text']
+    live.raw_txt.delete('1.0', 'end')
+    live.root.update()
+    _wait(live)
+    assert not live.live_frozen and _out(live) == '' and not live.live_bar.winfo_manager()
+
+
+def test_fast_confirm_after_edit_warns(live):
+    _type(live, 'лигатурная')
+    _wait(live)
+    live.out_txt.insert('end', '\nмоя правка')
+    live.raw_txt.insert('end', ', перепел')
+    live.root.update()
+    live.generate()
+    assert 'исправленный' in live.status_lbl['text'] and 'не вошл' in live.status_lbl['text']
+    assert live.mark_prompt.winfo_manager()
+
+
+def test_copy_on_draft_confirms(live):
+    _type(live, 'лигатурная')
+    _wait(live)
+    live.generate()
+    _type(live, ', перепел')
+    _wait(live)
+    n = live.ctl.journal._db.execute('SELECT COUNT(*) FROM entries').fetchone()[0]
+    live.copy()
+    assert live.ctl.journal._db.execute('SELECT COUNT(*) FROM entries').fetchone()[0] == n + 1
+    assert live.ctl._last_raw.endswith('перепел')
+
+
+def test_mark_case_on_draft_asks_confirm(live):
+    _type(live, 'лигатурная')
+    _wait(live)
+    live.mark_case()
+    assert 'Ctrl+Enter' in live.status_lbl['text']
+
+
+def test_switch_preset_does_not_log_draft(live):
+    _type(live, 'лигатурная, перепел')
+    _wait(live)
+    n = live.ctl.journal._db.execute('SELECT COUNT(*) FROM entries').fetchone()[0]
+    other = next(p.id for p in live.ctl.presets.list() if p.id != live.ctl.preset_id)
+    live.switch_to(other)
+    live.root.update()
+    assert live.ctl.journal._db.execute('SELECT COUNT(*) FROM entries').fetchone()[0] == n
+    assert 'Перепел' in _out(live) and 'Ctrl+Enter' in live.status_lbl['text']
+
+
+def test_tokens_cleared_on_preset_switch(live):
+    live.ctl.learn('торк', '4g3')
+    _accept(live, 'тор')
+    other = next(p.id for p in live.ctl.presets.list() if p.id != live.ctl.preset_id)
+    live.switch_to(other)
+    assert live.tokens() == [] and not live.raw_txt.tag_ranges('token')
+
+
+def test_only_doctor_words_become_tokens(live):
+    _accept(live, 'перепе')
+    assert live.tokens() == []
+
+
+def test_bind_word_keeps_unlearn_and_marks(live):
+    _type(live, 'лигатурная, класс 1, квакозябра')
+    _wait(live, 200)
+    live._open_add_for_word('квакозябра')
+    live.add_entry.insert(0, 'третьего')
+    live._on_add_query()
+    live._add_selected(0)
+    assert live.unlearn_btn.winfo_manager()
+
+
+def test_import_does_not_freeze(live, order_xlsx):
+    _type(live, 'лигатурная')
+    _wait(live)
+    live.import_xlsx_path(order_xlsx, update=True)
+    _type(live, ', перепел')
+    _wait(live)
+    assert not live.live_frozen and 'Перепел' in _out(live)
+
+
+def test_appending_to_token_unbinds(live):
+    live.ctl.learn('торк', '4g3')
+    _accept(live, 'тор')
+    _type(live, 'ование')
+    assert live.tokens() == []
