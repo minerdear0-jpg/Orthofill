@@ -206,3 +206,49 @@ def test_whats_new_link_leaves_on_first_action(app):
     _gen(app, "активация, рабочий")
     assert not app.news_lbl.winfo_manager()       # не мешает работе
     assert app.ctl.whats_new_pending()            # но не открыт — покажется при запуске
+
+
+# ---------- 0.2 beta 4: входы в редактор ----------
+def test_menu_has_edit_preset(app):
+    m = app.preset_menu
+    labels = [m.entrycget(i, 'label') for i in range(m.index('end') + 1) if m.type(i) == 'command']
+    assert 'Изменить пресет…' in labels
+
+
+def _line_of(app, needle):
+    lines = app.out_txt.get('1.0', 'end-1c').splitlines()
+    return next(i for i, ln in enumerate(lines, 1) if needle in ln)
+
+
+def test_right_click_opens_editor_on_line(app):
+    _gen(app, 'активация, рабочий, гигиена неуд')
+    line = _line_of(app, 'неудовлетвор')
+    code = app._code_at(f'{line}.3')
+    assert code == '3f2'
+    ed = app.edit_line_at(f'{line}.3')
+    assert ed.tree.selection() == ('3f2',)
+
+
+def test_right_click_finds_edited_and_added_lines(app):
+    _gen(app, 'активация, рабочий')
+    app.out_txt.insert('1.0', 'моя строка\n')
+    assert app._code_at('1.2') is None and app.edit_line_at('1.2') is None
+    line = _line_of(app, 'Лечение')
+    assert app._code_at(f'{line}.1') == '4'
+
+
+def test_import_over_edited_preset_asks(app, monkeypatch, order_xlsx):
+    asked = []
+    monkeypatch.setattr(app, '_choice', lambda t, text, b: asked.append(text) or 'cancel')
+    ed = app.open_editor('4d3')
+    ed.add_variant()
+    app.import_xlsx_path(order_xlsx, update=True)
+    assert any('несохранёнными' in a for a in asked)
+    assert ed.draft.changed                           # правки на месте
+
+
+def test_import_update_refreshes_open_editor(app, order_xlsx_with):
+    ed = app.open_editor('4d')
+    wb2 = order_xlsx_with(('4d4', 'на зубе.'))
+    app.import_xlsx_path(wb2.path, update=True)
+    assert ed.tree.exists('4d4')

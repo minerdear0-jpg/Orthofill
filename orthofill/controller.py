@@ -175,6 +175,8 @@ class Controller:
             if update_id is not None:
                 self.presets.update(update_id, wb)
                 pid = update_id
+                if self.draft is not None and self.draft.preset_id == update_id:
+                    self.draft = None       # черновик — по старому пресету
             else:
                 pid = self.presets.create(wb)
             self._activate(pid)

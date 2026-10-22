@@ -212,6 +212,7 @@ class App:
         self.out_txt.tag_configure('first', spacing1=0)
         self.out_txt.tag_configure('check', lmargin1=10, lmargin2=10, lmargincolor=WARN_TEXT)
         self.out_txt.bind('<KeyRelease>', self._unmark_edited, add='+')
+        self.out_txt.bind('<Button-3>', self._on_protocol_menu)
         self.out_txt.tag_configure('added', background='#e3eef7')
 
         # Строка статуса
@@ -428,6 +429,8 @@ class App:
                               command=lambda pid=p.id: self.switch_to(pid))
         if self.ctl.presets.list():
             m.add_separator()
+        m.add_command(label='Изменить пресет…', command=self.open_editor,
+                      state='normal' if self.ctl.workbook else 'disabled')
         m.add_command(label='Импорт xlsx…', command=self.import_xlsx, accelerator='Ctrl+O')
         m.add_command(label='Экспорт xlsx…', command=self.export_xlsx,
                       state='normal' if self.ctl.workbook else 'disabled')
@@ -475,19 +478,32 @@ class App:
     def import_xlsx(self):
         p = filedialog.askopenfilename(title='Импорт пресета из xlsx',
                                        filetypes=[('Excel', '*.xlsx'), ('Все файлы', '*.*')])
-        if not p:
-            return
+        if p:
+            self.import_xlsx_path(Path(p))
+
+    def import_xlsx_path(self, p: Path, update: bool | None = None):
+        """update=None — спросить: новый пресет или обновить текущий."""
         update_id = None
         wb = self.ctl.workbook
         if wb is not None:
-            ans = self._choice('Импорт xlsx', f'Файл: {Path(p).name}\n\nСоздать из него новый '
-                               f'пресет или обновить текущий «{wb.name}»?',
-                               [('new', 'Новый пресет'), ('update', f'Обновить «{wb.name}»'),
-                                ('cancel', 'Отмена')])
-            if ans in (None, 'cancel'):
-                return
+            if update is None:
+                ans = self._choice('Импорт xlsx', f'Файл: {Path(p).name}\n\nСоздать из него новый '
+                                   f'пресет или обновить текущий «{wb.name}»?',
+                                   [('new', 'Новый пресет'), ('update', f'Обновить «{wb.name}»'),
+                                    ('cancel', 'Отмена')])
+                if ans in (None, 'cancel'):
+                    return
+            else:
+                ans = 'update' if update else 'new'
             if ans == 'update':
                 update_id = self.ctl.preset_id
+                if self.ctl.editing_unsaved(update_id):
+                    ans = self._choice(
+                        'Импорт xlsx', f'Пресет «{wb.name}» открыт в редакторе с несохранёнными '
+                        f'правками. При обновлении из файла они пропадут.',
+                        [('cancel', 'Отмена'), ('go', 'Обновить, правки редактора пропадут')])
+                    if ans != 'go':
+                        return
                 if self.ctl.needs_export_before_update(update_id):
                     ans = self._choice(
                         'Импорт xlsx', f'В пресете «{wb.name}» есть эталоны, которых нет в '
@@ -499,6 +515,11 @@ class App:
                     if ans == 'export' and not self.export_xlsx():
                         return
         self.ctl.import_xlsx(Path(p), update_id=update_id)
+        ed = getattr(self, '_editor', None)
+        if update_id is not None and ed is not None and ed.top.winfo_exists() \
+                and ed.draft.preset_id == update_id:
+            ed._drop_draft()          # черновик — по обновлённому пресету
+            ed._done()
         self._show_file_status()
         if self.ctl.details and not self.ctl.file_status.startswith('✓'):
             self.show_details()
@@ -863,6 +884,40 @@ class App:
         f.pack(fill='both', expand=True, padx=10, pady=(0, 10))
         txt.insert('1.0', '\n'.join(self.ctl.details) or 'Замечаний нет.')
         txt.configure(state='disabled')
+
+    def _code_at(self, index: str) -> str | None:
+        """Код пункта строки протокола — по её тексту (строку могли поправить
+        или добавить: узнаются строки пресета как есть; свой текст врача — нет)."""
+        from .addition import _is_head, _known_lines
+        wb = self.ctl.workbook
+        if wb is None:
+            return None
+        t = self.out_txt
+        line = ' '.join(t.get(f'{index} linestart', f'{index} lineend').split())
+        if not line:
+            return None
+        code = _known_lines(wb).get(line)
+        if code:
+            return code
+        head = next((s for s in wb.sections if _is_head(line, s)), None)
+        if head is not None:
+            return head.id
+        return next((it.id for it in wb.items if ' '.join(it.text.split()) == line), None)
+
+    def edit_line_at(self, index: str):
+        code = self._code_at(index)
+        return self.open_editor(code) if code else None
+
+    def _on_protocol_menu(self, e):
+        index = self.out_txt.index(f'@{e.x},{e.y}')
+        code = self._code_at(index)
+        if not code:
+            return
+        text = ' '.join(self.ctl.workbook.by_id[code].text.split())
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label=f'Изменить «{text[:40]}{"…" if len(text) > 40 else ""}» в пресете…',
+                         command=lambda: self.open_editor(code))
+        menu.tk_popup(e.x_root, e.y_root)
 
     def after_preset_saved(self, preset_id: int, status: str):
         """Редактор сохранил пресет: статус, и протокол пересобран без копирования."""

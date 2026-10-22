@@ -65,3 +65,13 @@ def test_save_writes_no_import_row(ctl, order_xlsx):
     ctl.open_draft().set_text('4a', 'Осмотр.')
     ctl.save_draft()
     assert ctl.journal._db.execute('SELECT COUNT(*) FROM imports').fetchone()[0] == n
+
+
+def test_import_update_drops_stale_draft(ctl, order_xlsx_with):
+    wb2 = order_xlsx_with()                      # тот же order.xlsx
+    ctl.import_xlsx(wb2.path)
+    d = ctl.open_draft()
+    wb3 = order_xlsx_with(('4d4', 'на зубе.'))
+    ctl.import_xlsx(wb3.path, update_id=ctl.preset_id)
+    assert ctl.open_draft() is not d
+    assert '4d4' in ctl.open_draft().wb.by_id
