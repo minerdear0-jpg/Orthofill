@@ -231,3 +231,77 @@ def test_moving_cursor_with_right_does_not_accept(app):
         app.raw_txt.event_generate('<KeyRelease-Right>', when='now')
         app.root.update()
     assert _raw(app) == 'лигатурная, тор 22'
+
+
+# ---------- 0.3 beta 2: привычные фразы ----------
+def _history(app):
+    for raw in ('активация, лигатурная, замена дуги верх 18х25 тма, явка 6 нед',
+                'активация, лигатурная, замена дуги верх 18х25 тма, перепел'):
+        app.ctl.generate(raw)
+
+
+def test_phrase_tail_shown_and_accepted(app):
+    _history(app)
+    _type(app, 'замена ду')
+    assert app.hint_box.phrase == 'ги верх 18х25 тма' and app.hint_box.tail['text'] == 'ги верх 18х25 тма'
+    _key(app, 'Right')
+    assert _raw(app) == 'замена дуги верх 18х25 тма' and not app.hint_box.visible
+
+
+def test_tab_accepts_phrase(app):
+    _history(app)
+    _type(app, 'замена ду')
+    _key(app, 'Tab')
+    assert _raw(app) == 'замена дуги верх 18х25 тма'
+
+
+def test_ctrl_right_one_word(app):
+    _history(app)
+    _type(app, 'замена ду')
+    app.raw_txt.focus_force()
+    app.root.update()
+    app.raw_txt.event_generate('<Control-KeyPress-Right>', when='now')
+    app.raw_txt.event_generate('<KeyRelease-Right>', state=0x4, when='now')
+    app.root.update()
+    assert _raw(app) == 'замена дуги'
+    assert app.hint_box.tail['text'] == ' верх 18х25 тма'
+
+
+def test_next_phrase_after_comma(app):
+    _history(app)
+    _type(app, 'активация, ')
+    assert app.hint_box.tail['text'] == 'лигатурная'
+    _key(app, 'Tab')
+    assert _raw(app) == 'активация, лигатурная'
+
+
+def test_no_tail_mid_line(app):
+    _history(app)
+    app.raw_txt.insert('1.0', 'замена ду, перепел')
+    app.raw_txt.mark_set('insert', '1.9')
+    app.hint_box.update()
+    assert not app.hint_box.phrase
+
+
+def test_phrase_tail_hides_word_list(app):
+    _history(app)
+    app.ctl.learn('лигатуры', '4d3')
+    _type(app, 'активация, лиг')
+    assert app.hint_box.phrase and not app.hint_box.list_shown
+
+
+def test_enter_still_newline_with_phrase(app):
+    _history(app)
+    _type(app, 'замена ду')
+    _key(app, 'Return')
+    assert _raw(app) == 'замена ду\n' and not app.hint_box.visible
+
+
+def test_one_undo_restores_after_phrase(app):
+    _history(app)
+    _type(app, 'х, ')
+    app.raw_txt.edit_separator()
+    _type(app, 'замена ду')
+    _key(app, 'Tab')
+    app.raw_txt.edit_undo()
+    assert _raw(app) == 'х, замена ду'

@@ -290,3 +290,16 @@ def test_appending_to_token_unbinds(live):
     _accept(live, 'тор')
     _type(live, 'ование')
     assert live.tokens() == []
+
+
+def test_accepted_tail_feeds_live_protocol(live):
+    for raw in ('активация, лигатурная, замена дуги верх 18х25 тма, явка 6 нед',
+                'активация, лигатурная, замена дуги верх 18х25 тма, перепел'):
+        live.ctl.generate(raw)
+    _type(live, 'лигатурная, замена ду')
+    live.hint_box.update()
+    live.root.update()
+    assert live.hint_box.accept_phrase()
+    live.root.update()                          # событие «запись изменилась»
+    _wait(live)
+    assert '0.018×0.025" TMA' in _out(live)
