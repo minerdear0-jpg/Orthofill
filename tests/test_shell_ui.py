@@ -154,9 +154,16 @@ def _col(sh):
     return int(sh.raw_txt.index('insert').split('.')[1])
 
 
-def _dwell(sh):
-    sh.root.after(sh.shell_box.dwell_ms + 80)
-    sh.root.update()
+def _dwell(sh, expect: bool = True):
+    """Подождать «намеренную остановку»: под нагрузкой (полный прогон) таймер
+    срабатывает позже — ждём список до 2 с (или ровно паузу, если он не ожидается)."""
+    import time
+    end = time.monotonic() + (2.0 if expect else (sh.shell_box.dwell_ms + 150) / 1000)
+    while time.monotonic() < end:
+        sh.root.update()
+        if expect and sh.shell_box.list_shown:
+            return
+        time.sleep(0.02)
 
 
 def test_arrows_move_by_level(sh):
@@ -185,7 +192,7 @@ def test_typing_does_not_open_siblings(sh):
     _line_at(sh, ('4', '4b', '4b5'))
     _key(sh, 'Left')
     _key(sh, 'KeyPress', keysym='a')         # набор отменяет «намеренную остановку»
-    _dwell(sh)
+    _dwell(sh, expect=False)
     assert not sh.shell_box.list_shown
 
 

@@ -401,6 +401,23 @@ class Controller:
             return shell_protocol(self.workbook, raw)
         return build_protocol(self.workbook, raw, list(tokens))
 
+    def path_stats(self):
+        """Обычный набор врача для пресета — пересчёт только при новой записи или
+        другом пресете."""
+        from . import pathstats
+        wb = self.workbook
+        if wb is None:
+            return pathstats.PathStats()
+        n = self.journal._db.execute('SELECT COUNT(*), MAX(copied_at) FROM entries'
+                                     ' WHERE preset_id IS ?', (self.preset_id,)).fetchone()
+        key = (self.preset_id, wb.sha256, n[0], n[1], id(wb))
+        cached = self.__dict__.get('_stats_cache')
+        if cached and cached[0] == key:
+            return cached[1]
+        st = pathstats.build_stats(wb, self.journal.entries_for_stats(self.preset_id))
+        self._stats_cache = (key, st)
+        return st
+
     def _shell_unknown(self, raw: str) -> list[tuple[int, int, str]]:
         """Непонятые строки оболочки — целиком."""
         from .shell import is_leaf, parse_line
