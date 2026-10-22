@@ -7,7 +7,11 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from pathlib import Path
+from tkinter import filedialog
+
 from .addition import row_text, search_items
+from .lint import JAW_FIX, LEVEL_LABELS
 from .lint import lint
 from .methods import METHOD_LABELS, WHEN_LABELS
 from .ui import ACCENT, MUTED, TITLE, WARN_TEXT
@@ -59,6 +63,14 @@ class EditorWindow:
         self.status_lbl.pack(side='left', padx=(12, 0))
         self.bottom_right = ttk.Frame(bottom)
         self.bottom_right.pack(side='right')
+        ttk.Button(self.bottom_right, text='Отменить изменения',
+                   command=self.discard).pack(side='left')
+        ttk.Button(self.bottom_right, text='Сохранить', style='Accent.TButton',
+                   command=self.save).pack(side='left', padx=(6, 0))
+        ttk.Button(self.head_right, text='Импорт xlsx…', command=self.import_xlsx).pack(side='left')
+        ttk.Button(self.head_right, text='Экспорт xlsx…',
+                   command=self.export_xlsx).pack(side='left', padx=(6, 0))
+        top.bind('<Control-KeyPress>', self._on_ctrl)
 
         self.notebook = nb = ttk.Notebook(top)
         nb.pack(fill='both', expand=True, padx=14)
@@ -114,6 +126,44 @@ class EditorWindow:
                           ('Удалить', self.delete_selected)):
             ttk.Button(btns, text=text, command=cmd).pack(side='left', padx=(0, 6))
 
+        self.refs_page, self.refs_tab = self._tab_tree(
+            'Эталоны', (('Принять новое как эталон', self.accept_reference),
+                        ('Удалить эталон', self.delete_reference)), columns=())
+        self.words_page, self.words_tab = self._tab_tree(
+            'Слова врача', (('Удалить слово', self.delete_word),),
+            columns=(('item', 'Пункт', 360), ('code', 'Код', 60),
+                     ('added', 'Добавлено', 100), ('hits', 'Сработало', 80)))
+        self.words_tab.heading('#0', text='Слово')
+        self.words_tab.bind('<Double-1>', lambda e: self._goto(
+            self.words_tab.set(self.words_tab.focus(), 'code')))
+        self.lint_page, self.lint_tab = self._tab_tree(
+            'Проверка', (('Поменять коды местами', self._fix_selected),), columns=(('level', 'Вид', 150),))
+        self.lint_tab.heading('#0', text='Находка')
+        self.lint_tab.bind('<Double-1>', lambda e: self._goto(
+            (self.lint_tab.focus() or '').split('|')[-1].split(',')[0]))
+
+    def _tab_tree(self, title, buttons, columns):
+        page = ttk.Frame(self.notebook, padding=(0, 8, 0, 0))
+        self.notebook.add(page, text=title)
+        row = ttk.Frame(page)
+        row.pack(fill='x', side='bottom', pady=(6, 0))
+        for text, cmd in buttons:
+            ttk.Button(row, text=text, command=cmd).pack(side='left', padx=(0, 6))
+        tree = ttk.Treeview(page, columns=[c[0] for c in columns], selectmode='browse',
+                            show='tree headings' if columns else 'tree')
+        tree.column('#0', width=420, stretch=True)
+        for key, head, width in columns:
+            tree.heading(key, text=head)
+            tree.column(key, width=width, stretch=False)
+        tree.pack(fill='both', expand=True)
+        tree.tag_configure('bad', foreground=WARN_TEXT)
+        return page, tree
+
+    def _goto(self, code: str):
+        if code and self.tree.exists(code):
+            self.notebook.select(0)
+            self.select(code)
+
     # ---------- дерево ----------
     def _kind(self, code: str) -> str:
         it = self.draft.wb.by_id[code]
@@ -164,8 +214,77 @@ class EditorWindow:
             foreground='#1f7a3f' if ok == len(results) and not self.findings else WARN_TEXT)
         n = self.draft.changed
         self.changed_lbl.configure(text=f'● Изменено: {n}, не сохранено' if n else '')
+        self._refresh_tabs()
         self.undo_btn.state(['!disabled'] if self.draft.can_undo else ['disabled'])
         self.redo_btn.state(['!disabled'] if self.draft.can_redo else ['disabled'])
+
+    def _refresh_tabs(self):
+        wb, nb = self.draft.wb, self.notebook
+        t = self.refs_tab
+        t.delete(*t.get_children())
+        raws = {r.case_id: r.raw for r in wb.references}
+        for r in self.results:
+            iid = f'ref:{r.case_id}'
+            t.insert('', 'end', iid=iid, open=not r.ok, tags=() if r.ok else ('bad',),
+                     text=f'{"✓" if r.ok else "✗"} эталон {r.case_id}: {_ws(raws.get(r.case_id, ""))[:90]}')
+            for code, text in r.missing:
+                t.insert(iid, 'end', text=f'нет: {_ws(text)[:90]}  ({code})')
+            for code, text in r.extra:
+                t.insert(iid, 'end', text=f'лишнее: {_ws(text)[:90]}  ({code})')
+            if not r.ok and not r.missing and not r.extra:
+                t.insert(iid, 'end', text='отличается порядок строк')
+        nb.tab(self.refs_page, text=f'Эталоны ({len(self.results)})')
+
+        t = self.words_tab
+        t.delete(*t.get_children())
+        for e in wb.dictionary:
+            t.insert('', 'end', iid=f'w:{e.word}', text=e.word,
+                     values=(_ws(e.item_text)[:80], e.code, (e.added or '')[:10], e.hits))
+        nb.tab(self.words_page, text=f'Слова врача ({len(wb.dictionary)})')
+
+        t = self.lint_tab
+        t.delete(*t.get_children())
+        for k, f in enumerate(self.findings):
+            t.insert('', 'end', iid=f'{k}|{f.code}', text=f.message, values=(LEVEL_LABELS[f.level],),
+                     tags=('bad',) if f.level == 'error' else ())
+        nb.tab(self.lint_page, text=f'Проверка ({len(self.findings)})')
+
+    # ---------- вкладки: действия ----------
+    def _selected_case(self) -> str | None:
+        sel = self.refs_tab.selection()
+        while sel and self.refs_tab.parent(sel[0]):
+            sel = (self.refs_tab.parent(sel[0]),)
+        return sel[0].split(':', 1)[1] if sel else None
+
+    def accept_reference(self):
+        case = self._selected_case()
+        if case:
+            self.draft.accept_reference(case)
+            self._done()
+
+    def delete_reference(self):
+        case = self._selected_case()
+        if case and self.app._choice('Удалить эталон', f'Удалить эталон {case}?',
+                                     [('delete', 'Удалить'), ('cancel', 'Отмена')]) == 'delete':
+            self.draft.delete_reference(case)
+            self._done()
+
+    def delete_word(self):
+        sel = self.words_tab.selection()
+        if sel:
+            self.draft.delete_word(sel[0].split(':', 1)[1])
+            self._done()
+
+    def fix_finding(self, f):
+        if f.kind == JAW_FIX:
+            a, b = f.code.split(',')
+            self.draft.swap(a, b)
+            self._done(b)
+
+    def _fix_selected(self):
+        sel = self.lint_tab.selection()
+        if sel:
+            self.fix_finding(self.findings[int(sel[0].split('|')[0])])
 
     def _all_nodes(self):
         stack = list(self.tree.get_children())
@@ -449,6 +568,105 @@ class EditorWindow:
             self.draft.set_prop(code, 'words', words)
             self._done(code)
 
-    # ---------- закрытие ----------
+    # ---------- сохранение, закрытие, xlsx ----------
+    def save(self) -> bool:
+        if not self.draft.changed:
+            return True
+        broken = [r for r in self.results if not r.ok]
+        if broken and self.app._choice(
+                'Сохранить пресет',
+                f'Сломано эталонов: {len(broken)} из {len(self.results)} '
+                f'(см. вкладку «Эталоны»).\n\nСохранить всё равно?',
+                [('save', 'Сохранить'), ('cancel', 'Отмена')]) != 'save':
+            return False
+        status = self.ctl.save_draft()
+        self.app.after_preset_saved(self.draft.preset_id, status)
+        self._done()
+        return True
+
+    def discard(self):
+        if self.draft.changed and self.app._choice(
+                'Отменить изменения', f'Отменить все несохранённые правки ({self.draft.changed})?',
+                [('discard', 'Отменить правки'), ('cancel', 'Оставить')]) != 'discard':
+            return
+        self._drop_draft()
+        self._done()
+
+    def _drop_draft(self):
+        pid = self.draft.preset_id
+        self.ctl.draft = None
+        self.draft = self.ctl.open_draft(pid)
+
     def close(self):
+        if self.draft.changed:
+            ans = self.app._choice('Закрыть редактор',
+                                   f'Есть несохранённые правки: {self.draft.changed}.',
+                                   [('save', 'Сохранить'), ('discard', 'Не сохранять'),
+                                    ('cancel', 'Отмена')])
+            if ans == 'save':
+                if not self.save():
+                    return
+            elif ans == 'discard':
+                self.ctl.draft = None
+            else:
+                return
         self.top.destroy()
+
+    def import_xlsx(self):
+        p = filedialog.askopenfilename(parent=self.top, title='Импорт пресета из xlsx',
+                                       filetypes=[('Excel', '*.xlsx'), ('Все файлы', '*.*')])
+        if p:
+            self.import_path(Path(p))
+
+    def import_path(self, path: Path):
+        """Файл целиком заменяет черновик — одной отменяемой правкой."""
+        from .workbook import WorkbookError, load_workbook_file
+        try:
+            wb = load_workbook_file(path)
+        except WorkbookError as e:
+            self.status_lbl.configure(text=f'✗ {e}', foreground=WARN_TEXT)
+            return
+        if wb.problems:
+            self.status_lbl.configure(text=f'✗ ошибки в файле: {"; ".join(wb.problems[:3])}',
+                                      foreground=WARN_TEXT)
+            return
+        self.draft.import_wb(wb)
+        self._done()
+
+    def export_xlsx(self):
+        from datetime import date
+        if self.draft.changed and not self._save_first():
+            return
+        p = filedialog.asksaveasfilename(parent=self.top, title='Экспорт пресета в xlsx',
+                                         defaultextension='.xlsx',
+                                         initialfile=f'{self.draft.wb.name}-{date.today():%Y-%m-%d}.xlsx',
+                                         filetypes=[('Excel', '*.xlsx')])
+        if p:
+            self.export_path(Path(p))
+
+    def _save_first(self) -> bool:
+        return self.app._choice('Экспорт xlsx', 'Сначала сохранить правки? Выгружается '
+                                'сохранённый пресет.',
+                                [('save', 'Сохранить и выгрузить'), ('cancel', 'Отмена')]) == 'save' \
+            and self.save()
+
+    def export_path(self, path: Path):
+        if self.draft.changed and not self._save_first():
+            return
+        msg = self.ctl.export_xlsx(path, preset_id=self.draft.preset_id)
+        self.status_lbl.configure(text=msg, foreground=MUTED)
+        self.app._refresh_presets()
+
+    def _on_ctrl(self, e):
+        """Ctrl+Z / Ctrl+Y — по физической клавише (и в русской раскладке);
+        в полях ввода — их собственная правка."""
+        if isinstance(e.widget, (tk.Text, tk.Entry, ttk.Entry)):
+            return None
+        key = {52: 'z', 29: 'y', 90: 'z', 89: 'y'}.get(e.keycode)
+        if key == 'z':
+            self.undo()
+            return 'break'
+        if key == 'y':
+            self.redo()
+            return 'break'
+        return None

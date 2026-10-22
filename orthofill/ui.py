@@ -312,6 +312,8 @@ class App:
         self.root.bind_all('<Control-KeyPress>', self._on_ctrl_key, add='+')
 
     def _on_ctrl_key(self, e):
+        if e.widget.winfo_toplevel() is not self.root:
+            return None          # окно редактора: Ctrl+O / Ctrl+Shift+C главного окна не действуют
         latin = len(e.keysym) == 1 and e.keysym.isascii()
         key = (_VK if sys.platform == 'win32' else _X11).get(e.keycode)
         shift = bool(e.state & 0x1)
@@ -443,9 +445,14 @@ class App:
 
     def _choice(self, title: str, text: str, buttons: list[tuple[str, str]]) -> str | None:
         """Маленькое окно с кнопками; возвращает ключ нажатой или None (закрыли)."""
-        win = tk.Toplevel(self.root)
+        try:                     # поверх того окна, где сейчас работают (и редактора)
+            w = self.root.focus_get()
+            parent = w.winfo_toplevel() if w is not None else self.root
+        except (KeyError, tk.TclError):
+            parent = self.root
+        win = tk.Toplevel(parent)
         win.title(title)
-        win.transient(self.root)
+        win.transient(parent)
         win.resizable(False, False)
         body = ttk.Frame(win, padding=16)
         body.pack(fill='both', expand=True)
@@ -856,6 +863,15 @@ class App:
         f.pack(fill='both', expand=True, padx=10, pady=(0, 10))
         txt.insert('1.0', '\n'.join(self.ctl.details) or 'Замечаний нет.')
         txt.configure(state='disabled')
+
+    def after_preset_saved(self, preset_id: int, status: str):
+        """Редактор сохранил пресет: статус, и протокол пересобран без копирования."""
+        self._show_file_status()
+        raw = self.raw_txt.get('1.0', 'end-1c').strip()
+        if preset_id == self.ctl.preset_id and raw and self.out_txt.get('1.0', 'end-1c').strip():
+            self._regenerate_silently(raw, f'{status} — протокол пересобран; в буфере прежний')
+        else:
+            self._status(status)
 
     def open_editor(self, select: str | None = None):
         """Редактор пресета — одно окно на программу."""

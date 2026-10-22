@@ -190,21 +190,26 @@ class Controller:
     def needs_export_before_update(self, preset_id: int) -> bool:
         return any(p.id == preset_id and p.dirty for p in self.presets.list())
 
-    def export_xlsx(self, path: Path) -> str:
+    def export_xlsx(self, path: Path, preset_id: int | None = None) -> str:
+        """Выгрузить текущий пресет (или preset_id — из редактора)."""
         path = Path(path)
-        if self.workbook is None:
+        if preset_id is not None and preset_id != self.preset_id:
+            wb, pid = self.presets.load(preset_id), preset_id
+        else:
+            wb, pid = self.workbook, self.preset_id
+        if wb is None:
             return 'Сначала импортируйте пресет (xlsx)'
         try:
-            export_workbook(self.workbook, path)
+            export_workbook(wb, path)
         except PermissionError:
             return 'Файл открыт в Excel или нет прав на запись — закройте его и повторите'
         except Exception as e:
             self._log_error('export', e)
             return f'✗ Ошибка: {e}'
-        self.presets.mark_exported(self.preset_id, path.name)
+        self.presets.mark_exported(pid, path.name)
         self._log('export', file=path.name, preset=self._preset_ref(),
-                  items=len(self.workbook.items), references=len(self.workbook.references),
-                  dictionary=len(self.workbook.dictionary))
+                  items=len(wb.items), references=len(wb.references),
+                  dictionary=len(wb.dictionary))
         return f'Выгружено: {path.name}'
 
     def switch_preset(self, preset_id: int) -> None:
