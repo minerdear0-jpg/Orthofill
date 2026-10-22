@@ -1,0 +1,38 @@
+[Unit]
+Description=Orthofill — приёмник телеметрии
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=orthofill-rx
+Group=orthofill-rx
+WorkingDirectory=/opt/orthofill-receiver
+ExecStart=/opt/orthofill-receiver/venv/bin/python -m receiver.app --config /etc/orthofill-receiver/config.json
+Restart=on-failure
+RestartSec=5
+# песочница: служба видит только свою базу, без прав и чужих каталогов
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/orthofill-receiver
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -65,18 +65,29 @@ def _is_patronymic(word: str) -> bool:
     return bool(_PATRONYMIC.fullmatch(_key(word)))
 
 
-def scrub_text(text: str, keep: frozenset[str] = frozenset()) -> tuple[str, int]:
+def scrub_text(text: str, keep: frozenset[str] = frozenset(),
+               known: frozenset[str] = frozenset()) -> tuple[str, int]:
     """Текст без ФИО и сколько замен сделано. ``keep`` — слова врача/пресета
-    (нижний регистр), их не трогаем."""
+    (нижний регистр), их не трогаем; ``known`` — слова ФИО, уже найденные в
+    другом поле того же события (ключи нижнего регистра): вырезаются и одни."""
+    return _scrub(text, keep, known)[:2]
+
+
+def _scrub(text: str, keep: frozenset[str], known: frozenset[str] = frozenset()
+           ) -> tuple[str, int, set[str]]:
+    """(текст, замен, слова ФИО — ключи нижнего регистра)."""
+    found: set[str] = set()
     if not text:
-        return text, 0
+        return text, 0, found
     count = 0
 
     def _init_sub(m: re.Match) -> str:
         nonlocal count
-        if any(_key(w) in keep for w in _WORD.findall(m.group(0)) if len(w) >= 3):
+        words = [w for w in _WORD.findall(m.group(0)) if len(w) >= 3]
+        if any(_key(w) in keep for w in words):
             return m.group(0)
         count += 1
+        found.update(_key(w) for w in words)
         return MARK
 
     text = _INITIALS.sub(_init_sub, text)
@@ -88,7 +99,7 @@ def scrub_text(text: str, keep: frozenset[str] = frozenset()) -> tuple[str, int]
         w = m.group(0)
         if _key(w) in keep:
             kinds.append('')
-        elif _is_name(w):
+        elif _is_name(w) or _key(w) in known:
             kinds.append('N')
         elif _is_patronymic(w):
             kinds.append('P')
@@ -116,20 +127,36 @@ def scrub_text(text: str, keep: frozenset[str] = frozenset()) -> tuple[str, int]
             hi += 1
         spans.append((lo, hi))
     for lo, hi in reversed(spans):
+        found.update(_key(words[k].group(0)) for k in range(lo, hi + 1))
         text = text[:words[lo].start()] + MARK + text[words[hi].end():]
         count += 1
-    return text, count
+    return text, count, found
 
 
 def scrub_event(ev: dict, keep: frozenset[str] = frozenset()) -> dict:
     """Копия события: все строки (и во вложенных списках/словарях) без ФИО;
     ``scrubbed`` — число замен, если они были."""
     total = 0
+    known: set[str] = set()
+
+    def collect(v):                    # 1-й проход: какие слова ФИО есть в событии
+        if isinstance(v, str):
+            known.update(_scrub(v, keep)[2])
+        elif isinstance(v, dict):
+            for x in v.values():
+                collect(x)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                collect(x)
+            if len(v) > 1 and all(isinstance(x, str) for x in v):
+                collect(' '.join(v))       # список слов записи — по порядку, как фраза
+    collect(ev)
+    frozen = frozenset(known)
 
     def walk(v):
         nonlocal total
         if isinstance(v, str):
-            s, n = scrub_text(v, keep)
+            s, n, _ = _scrub(v, keep, frozen)
             total += n
             return s
         if isinstance(v, dict):

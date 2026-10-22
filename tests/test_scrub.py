@@ -45,3 +45,20 @@ def test_scrub_event_nested():
 
 def test_clean_event_has_no_counter():
     assert 'scrubbed' not in scrub_event({'raw': 'лигатурная'})
+
+
+def test_name_found_in_one_field_removed_from_all():
+    """Живая проверка 22.10: «Иванова» ушла в unknown.words отдельным словом."""
+    ev = {'event': 'unknown', 'raw': 'Иванова Мария Петровна, перепел',
+          'raw_norm': 'иванова мария петровна, перепел',
+          'words': ['Иванова', 'перепел'], 'lines': [['4f1', 'Петровна жалуется']]}
+    out = scrub_event(ev)
+    blob = repr(out).lower()
+    assert 'иванов' not in blob and 'петровн' not in blob and 'мари' not in blob
+    assert out['words'] == ['‹ФИО›', 'перепел']
+
+
+def test_word_list_read_as_phrase():
+    """Событие unknown — только список слов (без записи), в порядке записи."""
+    out = scrub_event({'event': 'unknown', 'words': ['Иванова', 'Мария', 'Петровна', 'квакозябра']})
+    assert out['words'] == ['‹ФИО›', '‹ФИО›', '‹ФИО›', 'квакозябра']

@@ -12,3 +12,6 @@ diagnostics/
 orthofill-errors.log
 orthofill/_build.py
 diag/
+telemetry.json
+server/*.pem
+server/config.json
