@@ -10,7 +10,7 @@ from .methods import METHOD_LABELS
 from .parse import arches_in, clause, extract_facts, parse_wire_from_label
 from .render import Row, render_rows
 from .text import norm, stem_in, word_stem
-from .workbook import Item, ReferenceCase, Workbook
+from .workbook import DictEntry, Item, ReferenceCase, Workbook
 
 __all__ = ['Protocol', 'CaseResult', 'ReferenceCase', 'build_protocol',
            'check_references', 'rule_kind', 'rule_warnings']
@@ -210,6 +210,7 @@ class _Ctx:
         self.picked: dict[str, tuple[list[Item], bool]] = {}
         self.unclear: set[str] = set()      # группа упомянута, но не распознана
         self.details: dict[str, str] = {}   # код → уточнение словами врача («22 брекет»)
+        self.tokens: list[DictEntry] = []   # привязанные подсказкой слова этой записи
 
     def flag(self, code: str, reason: str):
         reasons = self.flags.setdefault(code, [])
@@ -617,7 +618,8 @@ def _apply_dictionary(wb: Workbook, ctx: _Ctx) -> None:
     for it in wb.items:
         by_text.setdefault(' '.join(it.text.split()), []).append(it)
     hits = []
-    for e in wb.dictionary:
+    tokens = {id(e) for e in ctx.tokens}
+    for e in ctx.tokens + list(wb.dictionary):       # токен записи — раньше словаря
         m = next((m for m in re.finditer(_phrase_rx(e.word), ctx.n)
                   if not _negated_at(ctx.n, m.start(), m.end())), None)
         if m is None:
@@ -626,9 +628,10 @@ def _apply_dictionary(wb: Workbook, ctx: _Ctx) -> None:
         if it is None:
             ctx.warn(f'слово «{e.word}» больше не находит пункт')
             continue
-        hits.append((m.start(), e.word, it, m.end()))
-    for start, word, it, end in sorted(hits, key=lambda h: h[0]):
-        ctx.dictionary_hits.append(word)
+        hits.append((m.start(), e.word, it, m.end(), id(e) in tokens))
+    for start, word, it, end, is_token in sorted(hits, key=lambda h: (h[0], not h[4])):
+        if not is_token:                 # счётчик «сработало» — только у словаря
+            ctx.dictionary_hits.append(word)
         group = wb.by_id.get(it.parent) if it.level == 3 and not it.orphan else None
         if group is None:
             ctx.forced_singles.add(it.id)
@@ -674,8 +677,11 @@ def _check_pairs(wb: Workbook, lines: list[tuple[str, str]], ctx: _Ctx) -> None:
             ctx.flag(b, msg)
 
 
-def build_protocol(wb: Workbook, raw: str) -> Protocol:
+def build_protocol(wb: Workbook, raw: str, tokens: list[tuple[str, str]] | None = None) -> Protocol:
+    """tokens — слова записи, привязанные к пунктам принятой подсказкой (слово,
+    код): разбираются как слова врача, но только для этой записи."""
     ctx = _Ctx(raw, wb)
+    ctx.tokens = [DictEntry(w, wb.by_id[c].text, c) for w, c in (tokens or ()) if c in wb.by_id]
     if ctx.f['system_type'] is None:
         ctx.warn('тип системы не распознан (лигатурная / самолигирующая)')
     cl = ctx.f['classes']

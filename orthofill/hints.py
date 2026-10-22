@@ -22,6 +22,7 @@ class Hint:
     word: str
     becomes: str        # во что превратится; '' — неизвестно
     kind: str           # 'doctor' — ваше слово · 'history' — из ваших записей · 'item' — пункт
+    code: str = ''      # пункт, если известен наверняка (тогда принятое слово — токен)
 
 
 def _key(word: str) -> str:
@@ -56,16 +57,16 @@ def build_index(wb: Workbook, history: dict[str, int]) -> HintIndex:
     entries: list[Hint] = []
     seen: set[str] = set()
 
-    def add(word: str, becomes: str, kind: str):
+    def add(word: str, becomes: str, kind: str, code: str = ''):
         k = _key(word)
         if k not in seen:
             seen.add(k)
-            entries.append(Hint(word, becomes, kind))
+            entries.append(Hint(word, becomes, kind, code))
 
     rows = {it.id: row_text(it, g) for it, g in _choices(wb)}
     for e in sorted(wb.dictionary, key=lambda e: -e.hits):
         if ' ' not in e.word.strip():
-            add(e.word, rows.get(e.code, e.item_text), 'doctor')
+            add(e.word, rows.get(e.code, e.item_text), 'doctor', e.code if e.code in rows else '')
 
     owners: dict[str, set[str]] = {}            # слово пункта → в каких пунктах
     for it, g in _choices(wb):
@@ -73,12 +74,12 @@ def build_index(wb: Workbook, history: dict[str, int]) -> HintIndex:
             if len(w) >= 4 and w not in FILLER:
                 owners.setdefault(w, set()).add(it.id)
 
-    def becomes_of(word: str) -> str:
+    def owner(word: str) -> str:
         own = owners.get(word, set())
-        return rows[next(iter(own))] if len(own) == 1 else ''
+        return next(iter(own)) if len(own) == 1 else ''
 
     for w, _ in sorted(history.items(), key=lambda kv: (-kv[1], kv[0])):
-        add(w, becomes_of(w), 'history')
+        add(w, rows[owner(w)] if owner(w) else '', 'history', owner(w))
     for w in sorted(owners):
-        add(w, becomes_of(w), 'item')
+        add(w, rows[owner(w)] if owner(w) else '', 'item', owner(w))
     return HintIndex(entries)
