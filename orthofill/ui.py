@@ -263,6 +263,8 @@ class App:
         self._canvas_shown: list[str] = []
         self._canvas_info: dict[str, tuple[str, str]] = {}   # тег строки → (код, исходный текст)
         self._canvas_warn: list[str] = []
+        self._canvas_active = False         # поле протокола сейчас — холст (иначе захватывать нечего)
+        self._confirmed_lines: set[str] = set()   # строки подтверждённой записи (новый пациент?)
         for seq in ('<KeyRelease>', '<ButtonRelease-1>'):
             self.raw_txt.bind(seq, lambda e: self._canvas_highlight(), add='+')
 
@@ -514,6 +516,7 @@ class App:
             self._show_canvas(rows)
             return
         self._canvas_lines, self._canvas_shown, self._canvas_warn = [], [], []
+        self._canvas_active = False
         t = self.out_txt
         t.delete('1.0', 'end')
         for tag in ('section', 'first', 'check'):
@@ -535,6 +538,7 @@ class App:
         """Протокол как холст: собранные строки + правки врача + скелет."""
         from .canvas import compose
         from .predict import skeleton_blocks
+        self._canvas_capture()              # любая пересборка — сперва правки врача из поля
         wb = self.ctl.workbook
         order = {it.id: i for i, it in enumerate(wb.items)}
         section_of = {}
@@ -544,9 +548,15 @@ class App:
                 c = wb.by_id[c.parent]
             section_of[it.id] = c.id
         codes = {c for r in rows for c in r.codes}
+        keys = {'|'.join(r.codes) for r in rows}
+        e = self.ctl.canvas_edits
+        e.removed &= keys          # строки записи нет — «удалено» забыто: напишут снова — вернётся
         end = int(self.raw_txt.index('end-1c').split('.')[0]) + 1   # от конца записи
         skel = skeleton_blocks(wb, codes, self.shell_box._note_paths(end), self.ctl.path_stats())
-        lines, self._canvas_warn = compose(rows, self.ctl.canvas_edits, skel, order, section_of)
+        lines, self._canvas_warn = compose(rows, e, skel, order, section_of)
+        if e.removed:
+            self._canvas_warn.append(f'удалено строк протокола: {len(e.removed)} — вернутся, '
+                                     f'если стереть строку записи слева и написать снова')
         t = self.out_txt
         t.delete('1.0', 'end')
         for tag in t.tag_names():
@@ -572,31 +582,33 @@ class App:
             if i < len(lines) - 1:
                 t.insert('end', '\n')
         self._canvas_lines = lines
+        self._canvas_active = True
         self._canvas_shown = [l.code for l in lines if l.kind == 'row' or l.replaces]
         t.edit_reset()
         t.edit_modified(False)
         self._canvas_highlight()
 
     def _canvas_capture(self):
-        """Правки врача на холсте — по тому, что сейчас в поле протокола."""
-        if not (self.ctl.shell_mode and self._canvas_lines):
+        """Правки врача на холсте — сравнением поля протокола с последней отрисовкой."""
+        if not (self.ctl.shell_mode and self._canvas_active):
             return
-        from .canvas import PLACEHOLDER, capture
-        t = self.out_txt
-        last = int(t.index('end-1c').split('.')[0])
-        field = []
-        for n in range(1, last + 1):
-            text = t.get(f'{n}.0', f'{n}.end')
-            tags = t.tag_names(f'{n}.0')
-            cv = next((g for g in tags if g.startswith('cv') and g in self._canvas_info), None)
-            if cv is not None:
-                code, original = self._canvas_info[cv]
-                field.append((text, code, original))
-            elif 'skeleton' in tags or 'skeleton_next' in tags:
-                field.append((text, None, PLACEHOLDER))
-            else:
-                field.append((text, None, None))
-        self.ctl.canvas_edits = capture(field, self._canvas_shown, self.ctl.canvas_edits.removed)
+        from .canvas import capture
+        texts = self.out_txt.get('1.0', 'end-1c').split('\n')
+        self.ctl.canvas_edits = capture(self._canvas_lines, texts, self.ctl.canvas_edits.removed)
+
+    def _reset_canvas(self):
+        """Новый пациент или другой пресет: правки врача — с чистого листа."""
+        from .canvas import Edits
+        self.ctl.canvas_edits = Edits()
+        self._canvas_lines, self._canvas_active = [], False
+
+    def _protocol_text(self) -> str:
+        """Протокол, как его подтвердят: в режиме оболочки — без скелета."""
+        if self.ctl.shell_mode and self._canvas_active:
+            self._canvas_capture()
+            from .canvas import compose, confirm_text   # noqa: F401
+            return self._canvas_text()
+        return self.out_txt.get('1.0', 'end-1c')
 
     def _canvas_text(self) -> str:
         from .canvas import confirm_text
@@ -810,8 +822,10 @@ class App:
         self._cancel_live()
         self._clear_tokens()                # коды токенов — от прежнего пресета
         self._phrase_no_offer()             # предложение — для прежнего пресета
+        if self.ctl.shell_mode:
+            self._reset_canvas()            # коды правок — от прежнего пресета
         out = self.out_txt.get('1.0', 'end-1c')
-        edited = self.ctl.needs_confirm_regenerate(out)
+        edited = (not self.ctl.shell_mode) and self.ctl.needs_confirm_regenerate(out)
         prev = self.ctl.preset_id
         self.ctl.switch_preset(pid)
         self._show_file_status()
@@ -910,6 +924,14 @@ class App:
     def _on_raw_modified(self, e=None):
         if self.raw_txt.edit_modified():
             self.raw_txt.edit_modified(False)
+            if self.ctl.shell_mode:
+                raw = self.raw_txt.get('1.0', 'end-1c')
+                lines = {l for l in raw.splitlines() if l.strip()}
+                # новый пациент: запись стёрта или не осталось ни строки подтверждённой
+                if not raw.strip() or (self._confirmed_lines and not lines & self._confirmed_lines):
+                    if self._confirmed_lines or not raw.strip():
+                        self._reset_canvas()
+                    self._confirmed_lines = set()
             self._check_tokens()
             self._schedule_live()
 
@@ -924,8 +946,7 @@ class App:
         """Черновик протокола после паузы в наборе (без буфера и журнала)."""
         self._live_job = None
         if not self.raw_txt.get('1.0', 'end-1c').strip():     # запись стёрта — новый пациент
-            from .canvas import Edits
-            self.ctl.canvas_edits = Edits()
+            self._reset_canvas()
             self._unfreeze()
             self._live_show()
             return
@@ -1005,6 +1026,9 @@ class App:
         r = self.ctl.generate(self.raw_txt.get('1.0', 'end-1c'), tokens=self.tokens(),
                               text=current if edited else None, via=via, stats=stats)
         self._unfreeze()
+        if r.copied and self.ctl.shell_mode:
+            self._confirmed_lines = {l for l in self.raw_txt.get('1.0', 'end-1c').splitlines()
+                                     if l.strip()}
         if r.copied and edited:
             self.ctl.confirm_shown(current)         # правка подтверждена — это и есть протокол
         elif r.copied:
@@ -1506,7 +1530,7 @@ class App:
         out = self.out_txt.get('1.0', 'end-1c')
         if preset_id != self.ctl.preset_id or not raw or not out.strip():
             self._status(status)
-        elif self.ctl.needs_confirm_regenerate(out):     # правки врача не стирать
+        elif not self.ctl.shell_mode and self.ctl.needs_confirm_regenerate(out):   # правки не стирать
             self._status(f'{status}. Протокол правили вручную — Ctrl+Enter пересоберёт его '
                          f'по изменённому пресету')
         else:
@@ -1605,6 +1629,7 @@ class App:
         """Режим записи сменился (флажок или пресет): подсказки слов или оболочка."""
         self.hint_box.close()
         self.shell_box.close()
+        self._reset_canvas()
         self.shell_box.update()
         self._schedule_live()
 
@@ -1635,9 +1660,14 @@ def main_thread_gc(root: tk.Tk, every_ms: int = 10_000) -> None:
     import gc
     gc.disable()
 
+    count = [0]
+
     def tick():
-        gc.collect()
-        root.after(every_ms, tick)
+        try:            # чаще — молодые поколения, раз в минуту — полная сборка
+            count[0] += 1
+            gc.collect() if count[0] % 6 == 0 else gc.collect(1)
+        finally:
+            root.after(every_ms, tick)
     root.after(every_ms, tick)
 
 

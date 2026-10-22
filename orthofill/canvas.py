@@ -6,6 +6,7 @@
 блоки, которых ещё нет: живёт только в окне, в буфер и журнал не попадает."""
 from __future__ import annotations
 
+import difflib
 from dataclasses import dataclass, field
 
 from .render import Row
@@ -40,7 +41,13 @@ class CanvasLine:
 
 
 def _key(row: Row) -> str:
-    return row.codes[0]
+    """Строка протокола — по всем её кодам: соседние варианты одной группы
+    («Перепел», «Лиса») — разные строки."""
+    return '|'.join(row.codes)
+
+
+def _sec(key: str | None, section_of: dict[str, str]) -> str | None:
+    return section_of.get(key.split('|')[0]) if key else None
 
 
 def compose(rows: list[Row], edits: Edits, skeleton: list[tuple[str, bool]],
@@ -59,8 +66,10 @@ def compose(rows: list[Row], edits: Edits, skeleton: list[tuple[str, bool]],
             lines.append(CanvasLine(r.text, 'row', k, r))
     present = {l.code for l in lines if l.kind == 'row' or l.replaces}
     for o in edits.own:
-        if o.replaces:
+        if o.replaces and o.anchor in present:
             continue
+        if o.replaces:          # строки больше нет (пункт сменился) — правка остаётся своим текстом
+            o = OwnLine(o.anchor, o.text)
         own = CanvasLine(o.text, 'own', o.anchor)
         if o.anchor is None:
             at = sum(1 for l in lines if l.kind == 'own' and l.code is None and not l.replaces)
@@ -70,9 +79,9 @@ def compose(rows: list[Row], edits: Edits, skeleton: list[tuple[str, bool]],
             i = next(i for i, l in enumerate(lines)
                      if l.code == o.anchor and (l.kind == 'row' or l.replaces))
         else:
-            sec = section_of.get(o.anchor)
+            sec = _sec(o.anchor, section_of)
             same = [i for i, l in enumerate(lines)
-                    if (l.kind == 'row' or l.replaces) and section_of.get(l.code) == sec]
+                    if (l.kind == 'row' or l.replaces) and _sec(l.code, section_of) == sec]
             i = same[-1] if same else len(lines) - 1
             if MOVED not in warnings:
                 warnings.append(MOVED)
@@ -83,32 +92,63 @@ def compose(rows: list[Row], edits: Edits, skeleton: list[tuple[str, bool]],
     for code, nxt in skeleton:
         pos = order.get(code, 10 ** 9)
         at = next((i for i, l in enumerate(lines)
-                   if (l.kind == 'row' or l.replaces) and order.get(l.code, -1) > pos), len(lines))
+                   if (l.kind == 'row' or l.replaces)
+                   and order.get(l.code.split('|')[0], -1) > pos), len(lines))
         lines.insert(at, CanvasLine(PLACEHOLDER, 'skeleton_next' if nxt else 'skeleton', code))
     return lines, warnings
 
 
-def capture(lines: list[tuple[str, str | None, str | None]], shown: list[str],
+def capture(prev: list[CanvasLine], texts: list[str],
             removed_before: set[str] | frozenset = frozenset()) -> Edits:
-    """Правки врача по тому, что сейчас в поле: (текст, код собранной строки,
-    её исходный текст). shown — коды строк последней отрисовки."""
-    own: list[OwnLine] = []
-    seen: set[str] = set()
-    anchor: str | None = None
-    for text, code, original in lines:
-        if code is not None:
-            seen.add(code)
-            if text != original:
-                if text.strip():
-                    own.append(OwnLine(code, text, replaces=True))
+    """Правки врача: построчное сравнение того, что сейчас в поле (texts), с
+    последней отрисовкой (prev). Не зависит от тегов Tk (их теряют отмена, набор
+    в начале строки, перенос строки посередине)."""
+    old = [l.text for l in prev]
+    pairs: list[tuple[str, CanvasLine | None]] = []
+    gone: list[CanvasLine] = []
+    sm = difflib.SequenceMatcher(None, old, texts, autojunk=False)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == 'equal':
+            pairs += [(texts[j1 + k], prev[i1 + k]) for k in range(i2 - i1)]
+        elif op == 'delete':
+            gone += prev[i1:i2]
+        elif op == 'insert':
+            pairs += [(t, None) for t in texts[j1:j2]]
+        else:                                   # replace: по похожести, порядок сохраняется
+            i = i1
+            for j in range(j1, j2):
+                best, at = 0.0, None
+                for k in range(i, i2):
+                    r = difflib.SequenceMatcher(None, old[k], texts[j], autojunk=False).ratio()
+                    if r > best:
+                        best, at = r, k
+                if at is not None and best >= 0.5:
+                    gone += prev[i:at]
+                    pairs.append((texts[j], prev[at]))
+                    i = at + 1
                 else:
-                    seen.discard(code)              # строку стёрли — удалена
-            anchor = code
-            continue
-        if not text.strip() or (original == PLACEHOLDER and text == PLACEHOLDER):
-            continue
-        own.append(OwnLine(anchor, text.strip() if original == PLACEHOLDER else text))
-    removed = set(removed_before) | {c for c in shown if c not in seen}
+                    pairs.append((texts[j], None))
+            gone += prev[i:i2]
+    own: list[OwnLine] = []
+    removed = set(removed_before)
+    anchor: str | None = None
+    for text, src in pairs:
+        t = text.rstrip()
+        is_row = src is not None and (src.kind == 'row' or src.replaces)
+        if is_row:
+            original = (src.row.text if src.row else src.text).rstrip()
+            if t == original:
+                pass                            # собранная строка как есть
+            elif t:
+                own.append(OwnLine(src.code, t, replaces=True))
+            else:
+                removed.add(src.code)           # строку стёрли
+            anchor = src.code
+        elif t:
+            own.append(OwnLine(anchor, t))      # свой текст (и набранный в скелет)
+    for src in gone:
+        if src.kind == 'row' or src.replaces:
+            removed.add(src.code)
     return Edits(own, removed)
 
 

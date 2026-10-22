@@ -263,7 +263,8 @@ class ShellBox:
     def _shift_tab(self):
         if not self.on():
             return None
-        return 'break' if self._cycle(-1) else None
+        self._cycle(-1)
+        return 'break'              # в оболочке Shift+Tab не уводит фокус из записи
 
     def _show_list(self, choices: list[Path], selected: int = -1):
         self.choices, self.selected = choices, selected
@@ -468,6 +469,8 @@ class ShellBox:
             return None
         self.selected = max(0, min(len(self.choices) - 1, self.selected + step))
         self._show_list(self.choices, self.selected)
+        n, line = self._line()
+        self._list_line = line          # выбрали стрелкой — Tab дальше листает, не дополняет
         return 'break'
 
     def _keypress(self, e):
