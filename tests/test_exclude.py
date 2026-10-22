@@ -81,3 +81,13 @@ def test_exclude_goes_to_telemetry_when_on(ctl, order_xlsx, monkeypatch):
         ctl.set_diagnostics(False)
     finally:
         rx.stop()
+
+
+def test_exclude_case_base_once(ctl, order_xlsx, monkeypatch):
+    import orthofill.controller as cm
+    ctl.import_xlsx(order_xlsx)
+    calls = []
+    real = cm.build_protocol
+    monkeypatch.setattr(cm, 'build_protocol', lambda wb, raw, *a: calls.append(raw) or real(wb, raw, *a))
+    ctl.exclude_case([('4f', '4f1'), ('4d', '4d3')], 'перепел', ['a', 'b'])
+    assert calls.count('') <= 1

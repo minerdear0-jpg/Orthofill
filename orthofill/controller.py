@@ -818,7 +818,7 @@ class Controller:
         return 'Спасибо, случай сохранён'
 
     # ---------- «Ошибка → Исключить» (0.5 b6) ----------
-    def line_source(self, code: str, raw: str) -> str:
+    def line_source(self, code: str, raw: str, base: set[str] | None = None) -> str:
         """Откуда строка протокола: path — строка оболочки · default — есть и в
         пустой записи · always · condition · note — из слов записи."""
         from .engine import _effective_when, effective_condition
@@ -829,7 +829,9 @@ class Controller:
                 p = parse_line(wb, line) if '›' in line else None
                 if p and code in p:
                     return 'path'
-        if code in {c for c, _ in build_protocol(wb, '').lines}:
+        if base is None:
+            base = {c for c, _ in build_protocol(wb, '').lines}
+        if code in base:
             return 'default'
         it = wb.by_id.get(code)
         when = _effective_when(wb).get(code)
@@ -839,26 +841,36 @@ class Controller:
             return 'always'
         return 'note'
 
-    def exclude_case(self, codes: list[tuple[str, ...]], raw: str, rows_text: list[str]) -> str:
+    def exclude_case(self, codes: list[tuple[str, ...]], raw: str, rows_text: list[str],
+                     tokens=(), shown: str = '') -> str:
         """«Ошибка → Исключить»: этой строки в отчёте быть не должно. Пишется
         всегда (явное действие врача), с телеметрией — сразу на сервер."""
         import uuid
         cid = uuid.uuid4().hex
         wb = self.workbook
+        tokens = [list(t) for t in tokens]
         try:
-            p = self._build(raw)
+            prev = getattr(self, '_preview', None)      # ровно то, что врач видел
+            p = prev[2] if prev and prev[0] == raw and [list(t) for t in prev[1]] == tokens \
+                else self._build(raw, [tuple(t) for t in tokens])
             lines, defaults, warnings = p.lines, p.defaults, p.warnings
         except Exception:
             lines, defaults, warnings = [], [], []
+        base = {c for c, _ in build_protocol(wb, '').lines} if wb else set()
         excluded = []
         for row_codes, text in zip(codes, rows_text):
             leaf = row_codes[-1]
             group = row_codes[0] if len(row_codes) > 1 else None
             excluded.append({'code': leaf, 'group': group, 'text': text,
-                             'source': self.line_source(leaf, raw)})
+                             'source': self.line_source(leaf, raw, base)})
+        same_note = self._last_raw.strip() == raw.strip() and self.last_entry_id is not None
+        e = self.canvas_edits
         self._diag.write('case', kind='exclude', kind_label=CASE_KINDS['exclude'], case_id=cid,
-                         entry_id=self.last_entry_id, raw=raw,
-                         mode='shell' if self.shell_mode else 'comma',
+                         entry_id=self.last_entry_id if same_note else None, raw=raw,
+                         mode='shell' if self.shell_mode else 'comma', tokens=tokens,
+                         facts=None if self.shell_mode else extract_facts(raw), shown=shown,
+                         canvas={'own': len(e.own), 'removed': sorted(e.removed)}
+                         if self.shell_mode else None,
                          lines=lines, defaults=defaults, warnings=warnings, excluded=excluded,
                          preset=self._preset_ref(), sha256=wb.sha256 if wb else None)
         return cid

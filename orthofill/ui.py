@@ -304,6 +304,7 @@ class App:
         self.exclude_lbl.pack(side='left')
         ttk.Button(self.exclude_bar, text='Вернуть', command=self._undo_exclude).pack(side='right')
         self._last_exclude = None
+        self._excluded: set[str] = set()     # через запятую: исключённые строки (до нового пациента)
         self.phrase_bar = ttk.Frame(st)
         self.phrase_lbl = ttk.Label(self.phrase_bar, text='', wraplength=520, justify='left')
         self.phrase_lbl.pack(side='left')
@@ -610,6 +611,8 @@ class App:
             return
         self._canvas_lines, self._canvas_shown, self._canvas_warn = [], [], []
         self._canvas_active = False
+        if self._excluded:                   # исключённые врачом строки — не показываются
+            rows = [r for r in rows if '|'.join(r.codes) not in self._excluded]
         t = self.out_txt
         t.delete('1.0', 'end')
         for tag in ('section', 'first', 'check'):
@@ -625,6 +628,8 @@ class App:
             t.insert('end', row.text + ('\n' if i < len(rows) - 1 else ''), tuple(tags))
         t.edit_reset()
         t.edit_modified(False)
+        if self._excluded:          # без исключённых строк — это и есть показанный протокол
+            self.ctl.confirm_shown(t.get('1.0', 'end-1c'))
 
     # ---------- холст (0.5 b3) ----------
     def _show_canvas(self, rows):
@@ -694,6 +699,8 @@ class App:
         from .canvas import Edits
         self.ctl.canvas_edits = Edits()
         self._canvas_lines, self._canvas_active = [], False
+        if hasattr(self, 'exclude_bar'):
+            self._forget_exclude()
 
     def _protocol_text(self) -> str:
         """Протокол, как его подтвердят: в режиме оболочки — без скелета."""
@@ -915,6 +922,8 @@ class App:
         self._cancel_live()
         self._clear_tokens()                # коды токенов — от прежнего пресета
         self._phrase_no_offer()             # предложение — для прежнего пресета
+        self._excluded = set()              # исключения — по кодам прежнего пресета
+        self._forget_exclude()
         if self.ctl.shell_mode:
             self._reset_canvas()            # коды правок — от прежнего пресета
         out = self.out_txt.get('1.0', 'end-1c')
@@ -1017,16 +1026,14 @@ class App:
     def _on_raw_modified(self, e=None):
         if self.raw_txt.edit_modified():
             self.raw_txt.edit_modified(False)
-            if self.ctl.shell_mode:
-                if self.shell_view == 'review':
-                    self.set_shell_view('input')    # пишут дальше — снова всё окно под запись
-                raw = self.raw_txt.get('1.0', 'end-1c')
-                lines = {l for l in raw.splitlines() if l.strip()}
-                # новый пациент: запись стёрта или не осталось ни строки подтверждённой
-                if not raw.strip() or (self._confirmed_lines and not lines & self._confirmed_lines):
-                    if self._confirmed_lines or not raw.strip():
-                        self._reset_canvas()
-                    self._confirmed_lines = set()
+            if self.ctl.shell_mode and self.shell_view == 'review':
+                self.set_shell_view('input')        # пишут дальше — снова всё окно под запись
+            raw = self.raw_txt.get('1.0', 'end-1c')
+            lines = {l for l in raw.splitlines() if l.strip()}
+            # новый пациент: запись стёрта или (оболочка) не осталось ни строки подтверждённой
+            if not raw.strip() or (self.ctl.shell_mode and self._confirmed_lines
+                                   and not lines & self._confirmed_lines):
+                self._new_patient()
             self._check_tokens()
             self._schedule_live()
 
@@ -1111,7 +1118,8 @@ class App:
             current = self._canvas_text()
         else:
             current = self.out_txt.get('1.0', 'end-1c')
-        edited = self.ctl.needs_confirm_regenerate(current)
+        edited = self.ctl.needs_confirm_regenerate(current) or (
+            bool(self._excluded) and not self.ctl.shell_mode)   # без исключённых строк
         stale = edited and (pending or self.live_frozen)   # дописано после правки протокола
         stats = self._note_stats()
         if self.ctl.shell_mode and self._canvas_lines:      # правки на холсте — без текста
@@ -1121,9 +1129,11 @@ class App:
         r = self.ctl.generate(self.raw_txt.get('1.0', 'end-1c'), tokens=self.tokens(),
                               text=current if edited else None, via=via, stats=stats)
         self._unfreeze()
-        if r.copied and self.ctl.shell_mode:
+        if r.copied:
             self._confirmed_lines = {l for l in self.raw_txt.get('1.0', 'end-1c').splitlines()
                                      if l.strip()}
+            self._forget_exclude()
+        if r.copied and self.ctl.shell_mode:
             self.set_shell_view('review')       # сравнить: запись | протокол рядом
         if r.copied and edited:
             self.ctl.confirm_shown(current)         # правка подтверждена — это и есть протокол
@@ -1644,30 +1654,28 @@ class App:
         return out
 
     def _exclude(self, first: str, last: str):
-        """Строки под выделением — вон из протокола; случай — разработчику."""
+        """Строки под выделением — вон из протокола (до нового пациента);
+        случай — разработчику."""
+        t = self.out_txt
+        if t.compare(last, '>', first) and t.index(last).endswith('.0'):
+            last = f'{last} -1c'               # тройной щелчок: строка с её переводом — одна
         rows = self._rows_at(first, last)
         if not rows:
             self._status('Здесь нет строки пункта — исключать нечего')
             return
         raw = self.raw_txt.get('1.0', 'end-1c')
-        cid = self.ctl.exclude_case([c for _, c, _ in rows], raw, [x for _, _, x in rows])
-        t = self.out_txt
+        tokens = [] if self.ctl.shell_mode else self.tokens()
+        cid = self.ctl.exclude_case([c for _, c, _ in rows], raw, [x for _, _, x in rows],
+                                    tokens=tokens, shown=self._protocol_text())
+        keys = {'|'.join(c) for _, c, _ in rows}
         if self.ctl.shell_mode and self._canvas_lines:
             self._canvas_capture()
-            keys = {'|'.join(c) for _, c, _ in rows}
             self.ctl.canvas_edits.removed |= keys
             self._last_exclude = (cid, 'shell', keys)
-            self._live_show()
         else:
-            removed = [(n, x) for n, _, x in rows]
-            for n, _ in reversed(removed):
-                if t.compare(f'{n}.end', '<', 'end-1c'):
-                    t.delete(f'{n}.0', f'{n + 1}.0')
-                elif n > 1:                          # последняя строка — с переносом перед ней
-                    t.delete(f'{n - 1}.end', f'{n}.end')
-                else:
-                    t.delete(f'{n}.0', f'{n}.end')
-            self._last_exclude = (cid, 'comma', removed)
+            self._excluded |= keys
+            self._last_exclude = (cid, 'comma', keys)
+        self._live_show()
         names = '», «'.join(' '.join(x.split())[:40] for _, _, x in rows[:2])
         more = f' и ещё {len(rows) - 2}' if len(rows) > 2 else ''
         self.exclude_lbl.configure(text=f'Исключено: «{names}»{more} — случай сохранён')
@@ -1676,22 +1684,27 @@ class App:
     def _undo_exclude(self):
         if not self._last_exclude:
             return
-        cid, mode, data = self._last_exclude
-        self._last_exclude = None
+        cid, mode, keys = self._last_exclude
+        self._forget_exclude()
         if mode == 'shell':
             self._canvas_capture()
-            self.ctl.canvas_edits.removed -= data
-            self._live_show()
+            self.ctl.canvas_edits.removed -= keys
         else:
-            t = self.out_txt
-            for n, text in data:                    # по возрастанию — номера строк как были
-                lines = int(t.index('end-1c').split('.')[0])
-                if n > lines:
-                    t.insert('end-1c', '\n' + text)
-                else:
-                    t.insert(f'{n}.0', text + '\n')
+            self._excluded -= keys
+        self._live_show()
         self.ctl.exclude_undo(cid)
+
+    def _forget_exclude(self):
+        """Полоска «Вернуть» — только для этой записи (новый пациент, подтверждение,
+        другой пресет — её больше нет)."""
+        self._last_exclude = None
         self.exclude_bar.pack_forget()
+
+    def _new_patient(self):
+        self._reset_canvas()
+        self._excluded = set()
+        self._forget_exclude()
+        self._confirmed_lines = set()
 
     def _on_protocol_menu(self, e):
         self.out_txt.focus_set()

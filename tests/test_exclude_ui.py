@@ -151,3 +151,72 @@ def test_exclude_last_line_comma(app):
     assert not _out(app).endswith('\n') and text not in _out(app)
     app._undo_exclude()
     assert _out(app) == before
+
+
+# ---------- итоговая проверка 0.5b6 ----------
+def test_triple_click_selection_one_line(app):
+    _comma(app)
+    n = _line(app, 'Перепел')
+    above = app.out_txt.get(f'{n - 1}.0', f'{n - 1}.end')
+    app._exclude(f'{n - 1}.0', f'{n}.0')            # выделение строки с её переводом
+    assert 'Перепел' in _out(app) and above not in _out(app)
+
+
+def test_bar_cleared_for_new_patient(app):
+    _comma(app)
+    n = _line(app, 'Перепел')
+    app._exclude(f'{n}.0', f'{n}.end')
+    app.raw_txt.delete('1.0', 'end')                 # новый пациент: стёр запись…
+    app.root.update()
+    app.raw_txt.insert('1.0', 'лигатурная, перепел')   # …и набрал новую
+    app.root.update()
+    app._live()
+    assert not app.exclude_bar.winfo_manager() and 'Перепел' in _out(app)
+    app._undo_exclude()                              # полоски нет — ничего не вставит
+    assert _out(app).count('Перепел') == 1
+
+
+def test_bar_cleared_on_confirm(sh):
+    n = _line(sh, 'Перепел')
+    sh._exclude(f'{n}.0', f'{n}.end')
+    sh.generate('ctrl_enter')
+    assert not sh.exclude_bar.winfo_manager()
+
+
+def test_comma_exclusion_sticky_no_freeze(app):
+    clip = []
+    app.ctl.clipboard = clip.append
+    app.live_delay = 20
+    _comma(app)
+    n = _line(app, 'Перепел')
+    app._exclude(f'{n}.0', f'{n}.end')
+    app.raw_txt.insert('end', ', явка 6 нед')
+    app.root.update()
+    app._live()
+    assert not app.live_frozen and 'Перепел' not in _out(app)
+    app.generate('ctrl_enter')
+    assert 'Перепел' not in clip[-1]
+
+
+def test_comma_undo_after_rebuild_no_duplicate(app):
+    _comma(app)
+    n = _line(app, 'Перепел')
+    app._exclude(f'{n}.0', f'{n}.end')
+    app.raw_txt.insert('end', ', явка 6 нед')
+    app._live()
+    app._undo_exclude()
+    assert _out(app).count('Перепел') == 1
+
+
+def test_case_has_tokens_and_no_stale_entry(app):
+    app.ctl.learn('торк', '4g3')
+    app.ctl.generate('лигатурная, перепел')          # прошлый пациент
+    app.raw_txt.delete('1.0', 'end')
+    app.raw_txt.insert('1.0', 'лигатурная, торк')
+    app.bind_token('1.12', '1.16', '4g3')
+    app._live_show()
+    n = _line(app, 'третьего')
+    app._exclude(f'{n}.0', f'{n}.end')
+    e = _cases(app)[-1]
+    assert e['entry_id'] is None and e['tokens'] == [['торк', '4g3']]
+    assert e['shown'] and '4g3' in [c for c, _ in e['lines']]
