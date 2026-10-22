@@ -646,7 +646,11 @@ def check_references(wb: Workbook) -> list[CaseResult]:
         if free:     # варианты групп с формулировкой врача не сравниваются
             got = [c for c in got if not (c in wb.by_id and wb.by_id[c].parent in free
                                           and wb.by_id[c].level == 3)]
-        text_of = lambda c: (c, wb.by_id[c].text if c in wb.by_id else '')  # noqa: E731
+        ref_text = {c: t for c, t in case.lines if c}
+
+        def text_of(c: str) -> tuple[str, str]:
+            # пункта нет в пресете (удалён) — текст из строки эталона
+            return c, wb.by_id[c].text if c in wb.by_id else ref_text.get(c, '')
         results.append(CaseResult(
             case.case_id, got == exp,
             missing=[text_of(c) for c in exp if c not in got],

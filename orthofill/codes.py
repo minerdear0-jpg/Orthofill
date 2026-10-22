@@ -120,7 +120,7 @@ def apply_map(wb: Workbook, m: CodeMap) -> None:
         tail = max((k for k, x in enumerate(rest)
                     if x.id == it.parent or x.id.startswith(it.parent)), default=len(rest) - 1)
         wb.items[:] = rest[:tail + 1] + block + rest[tail + 1:]
-    _rebuild(wb)
+    rebuild(wb)
     for it in wb.items:
         if it.default:
             it.default = m.get(it.default, it.default)
@@ -130,7 +130,8 @@ def apply_map(wb: Workbook, m: CodeMap) -> None:
         e.code = m.get(e.code, e.code)
 
 
-def _rebuild(wb: Workbook) -> None:
+def rebuild(wb: Workbook) -> None:
+    """by_id, дети и разделы — заново по wb.items."""
     wb.by_id.clear()
     wb.by_id.update({it.id: it for it in wb.items})
     for it in wb.items:
