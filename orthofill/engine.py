@@ -191,6 +191,7 @@ def _first_number(text: str) -> int | None:
 
 class _Ctx:
     def __init__(self, raw: str, wb: Workbook | None = None):
+        self.raw = raw
         self.f = extract_facts(raw)
         self.n = self.f['raw_norm']
         self.wb = wb
@@ -246,13 +247,20 @@ def _elastic_named(c: Item, n: str) -> bool:
         and not _cancelled(n, word_stem(words[0]))
 
 
-def _adjust_detail(n: str) -> str:
-    """Уточнение юстировки словами врача: «изгиб первого 22 брекет» → «22 брекет».
-    Из фразы убирается то, что уже сказано пунктом (изгиб, порядок, юстировка)."""
-    phrase = clause(n, r'изгиб|юстир', stops='.;,')
-    rest = re.sub(r'\b(?:изгиб\w*|юстир\w*|дуг\w*|перв\w*|втор\w*|трет\w*|порядк\w*|'
-                  r'и|на|по|в)\b', ' ', phrase)
-    return ' '.join(rest.split())
+# указание на зубы/брекеты: «22 брекет», «на 13 зубе», «с 13 по 23», «11, 21»
+_TEETH = r'(?:(?:на|с)\s+)?\d{2}(?:\s*(?:,|и|-|–|по)\s*\d{2})*(?:\s+(?:брекет\w*|зуб\w*))?'
+
+
+def _adjust_detail(raw: str) -> str:
+    """Уточнение юстировки — только указание на зубы сразу после порядка изгиба,
+    ровно как написано («изгиб первого 22 Брекет» → «22 Брекет»). Больше ничего не
+    переносится: программа не пишет того, чего врач не сказал."""
+    m = re.search(r'(?:изгиб|юстир)[^.;,]*?(?<![а-яё])(?:перв\w*|втор\w*|трет\w*|[123])'
+                  r'(?:\s+порядк\w*)?', raw, re.I)
+    if not m:
+        return ''
+    d = re.match(r'\s*:?\s*(' + _TEETH + r')(?=\s|[.,;]|$)', raw[m.end():], re.I)
+    return d.group(1).strip() if d else ''
 
 
 def _select(group: Item, ctx: _Ctx) -> Item | None:
@@ -373,9 +381,10 @@ def _select(group: Item, ctx: _Ctx) -> Item | None:
         if len(hits) > 1:
             return _several(group, hits, ctx, 'юстировка')
         if hits:
-            detail = _adjust_detail(ctx.n)
+            detail = _adjust_detail(ctx.raw)
             if detail:
                 ctx.details[hits[0].id] = detail
+                ctx.flag(group.id, 'уточнение перенесено из записи — проверьте')
             return hits[0]
         if re.search(r'юстир|изгиб', ctx.n):
             ctx.warn('юстировка: вид изгиба не распознан — допишите вручную')
@@ -624,7 +633,8 @@ def _apply_dictionary(wb: Workbook, ctx: _Ctx) -> None:
         if group is None:
             ctx.forced_singles.add(it.id)
         elif rule_kind(group) == 'elastics' and any(
-                c is not it and _elastic_named(c, ctx.n[:start] + ' ' * (end - start) + ctx.n[end:])
+                c is not it and _elastic_named(c, re.sub(_phrase_rx(word),
+                                                         lambda m: ' ' * len(m.group()), ctx.n))
                 for c in group.children):
             # «тяги перепел»: вариант, названный другим словом, главнее выученного
             # («лиса» = «Медведь» — то же слово: выученное главнее)

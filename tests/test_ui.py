@@ -306,3 +306,16 @@ def test_entry_context_menu(app):
     m = app._text_menu(app.add_entry)
     labels = [m.entrycget(i, 'label') for i in range(m.index('end') + 1) if m.type(i) == 'command']
     assert 'Вставить' in labels and 'Выделить всё' in labels
+
+
+def test_russian_select_all_in_entry(app):
+    app.add_entry.insert(0, 'абв')
+    assert app._on_ctrl_key(_Ev(app.add_entry, 'Cyrillic_ef', 38)) == 'break'   # Ctrl+Ф = Ctrl+A
+    assert app.add_entry.selection_present()
+
+
+def test_altgr_is_not_a_shortcut(app):
+    # AltGr на Windows = Ctrl+Alt: символ раскладки, а не Ctrl+V
+    import sys
+    alt = 0x20000 if sys.platform == 'win32' else 0x8
+    assert app._on_ctrl_key(_Ev(app.raw_txt, 'Cyrillic_em', 55, state=0x4 | alt)) is None

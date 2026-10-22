@@ -15,6 +15,9 @@ _KIND = {'doctor': 'ваше слово', 'history': 'из ваших запис
 _KEEP = {'Tab', 'Up', 'Down', 'Return', 'KP_Enter', 'Escape', 'Shift_L', 'Shift_R',
          'Control_L', 'Control_R', 'Alt_L', 'Alt_R', 'ISO_Next_Group', 'Caps_Lock'}
 _SEL_BG, _BORDER = '#e3eef7', '#1f5f8b'
+# движение курсора по готовому тексту — подсказку закрыть (→ не должна принимать
+# подсказку к слову, мимо которого просто проходит курсор)
+_NAV = {'Left', 'Right', 'Home', 'End', 'Prior', 'Next'}
 
 
 class HintBox:
@@ -163,6 +166,9 @@ class HintBox:
         return True
 
     def _on_key_release(self, e):
+        if e.keysym in _NAV:
+            self.close()
+            return
         if e.keysym in _KEEP or e.keysym == 'space' and e.state & 0x4:
             return
         self.update(force=self._forced and bool(e.state & 0x4) is False)

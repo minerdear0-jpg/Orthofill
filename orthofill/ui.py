@@ -321,6 +321,9 @@ class App:
             self.root.bind_class(cls, '<Button-3>', self._on_field_menu, add='+')
 
     def _on_ctrl_key(self, e):
+        # AltGr (на Windows приходит как Ctrl+Alt) — символ раскладки, не сочетание
+        if e.state & (0x20000 if sys.platform == 'win32' else 0x8):
+            return None
         latin = len(e.keysym) == 1 and e.keysym.isascii()
         key = (_VK if sys.platform == 'win32' else _X11).get(e.keycode)
         shift = bool(e.state & 0x1)
@@ -342,6 +345,9 @@ class App:
         if isinstance(w, (tk.Text, tk.Entry, ttk.Entry)):
             if key == 'a' and isinstance(w, tk.Text):
                 w.tag_add('sel', '1.0', 'end-1c')
+            elif key == 'a':
+                w.select_range(0, 'end')
+                w.icursor('end')
             elif key in ('c', 'v', 'x', 'z'):
                 w.event_generate({'c': '<<Copy>>', 'v': '<<Paste>>',
                                   'x': '<<Cut>>', 'z': '<<Undo>>'}[key])

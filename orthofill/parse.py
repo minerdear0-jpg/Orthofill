@@ -278,7 +278,15 @@ def parse_ligature_change(n, st):
 
 # «металлическая (длинная) лигатура» — подвязывание длинной лигатурой, не смена
 # эластических; «короткая металлическая» — свой пункт (подвязывание одного зуба)
-_METAL = r'(?P<short>коротк\w*\s+)?металлическ\w*\s+(?:длинн\w*\s+)?лигатур\w*'
+_METAL_W = r'(?:металл\w*\.?|мет\.)'
+_METAL = (r'(?P<neg>без\s+)?(?P<short>коротк\w*\s+)?' + _METAL_W + r'\s*(?:длинн\w*\s+)?лигатур\w*'
+          r'|(?P<neg2>без\s+)?лигатур\w*\s+(?:длинн\w*\s+)?' + _METAL_W)
+
+
+def _long_metal(n):
+    """Упоминания длинной металлической лигатуры (не «короткой», не «без …»)."""
+    return [m for m in re.finditer(_METAL, n)
+            if not m.group('short') and not m.group('neg') and not m.group('neg2')]
 
 
 def _without_system(n):
@@ -290,18 +298,21 @@ def _without_system(n):
 
 def parse_binding(n):
     """Подвязывание: «подвяз…» или «металлическая (длинная) лигатура»."""
-    return 'подвяз' in n or any(not m.group('short') for m in re.finditer(_METAL, n))
+    return 'подвяз' in n or bool(_long_metal(n))
 
 def parse_ligature_arches(n):
     """Челюсть — только во фрагменте про лигатуры (не «дуга на верху»)."""
     return arches_in(clause(_without_system(n), r'лигатур(?!н)', stops='.;,'))
 
 def parse_binding_arches(n):
-    long_metal = next((m.start() for m in re.finditer(_METAL, n) if not m.group('short')), None)
     start = n.find('подвяз')
-    if start < 0 and long_metal is not None:
-        start = long_metal
-    return arches_in(clause(n[start:], r'.', stops='.;,')) if start >= 0 else None
+    if start >= 0:
+        return arches_in(clause(n[start:], r'.', stops='.;,'))
+    metal = next(iter(_long_metal(n)), None)
+    if metal is None:
+        return None
+    # после самого упоминания: точка в «мет.» — сокращение, не конец фразы
+    return arches_in(metal.group() + clause(n[metal.end():], r'.', stops='.;,'))
 
 def parse_wire_adjustments(n):
     out = []
