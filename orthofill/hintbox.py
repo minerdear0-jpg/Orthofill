@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import tkinter as tk
+import tkinter.font as tkfont
 
 _WORD_END = re.compile(r'[A-Za-zА-Яа-яЁё]+$')
 _KIND = {'doctor': 'ваше слово', 'history': 'из ваших записей', 'item': 'пункт'}
@@ -62,6 +63,7 @@ class HintBox:
     def close(self):
         self.items, self.selected, self.prefix, self._forced = [], -1, '', False
         self.phrase = self._phrase_at = ''
+        self._reopen = False
         self.tail.configure(text='')
         self.tail.place_forget()
         self.frame.place_forget()
@@ -75,8 +77,10 @@ class HintBox:
         t = self.text
         before = t.get('insert linestart', 'insert')
         after = t.get('insert', 'insert +1c')
-        # привычная фраза — только в конце строки (хвост не закрывает текст)
-        if after in ('', '\n'):
+        self.phrase = self._phrase_at = ''     # прежний хвост фразы — не тянуть дальше
+        # привычная фраза — только в конце строки (хвост не закрывает текст);
+        # Ctrl+Space — явная просьба о словах: фразу пропустить
+        if after in ('', '\n') and not force:
             cont = self.app.ctl.continuation(t.get('1.0', 'insert'))
             if cont:
                 self.close()
@@ -102,13 +106,31 @@ class HintBox:
 
     # ---------- показ ----------
     def _show_phrase(self):
-        box = self.text.bbox('insert')
+        """Хвост фразы — сколько помещается до края поля (по словам, с «…»);
+        принимается ровно показанное."""
+        t = self.text
+        box = t.bbox('insert')
         if box is None:
             self.close()
             return
         self.frame.place_forget()
         self.list_shown = False
-        self.tail.configure(text=self.phrase)
+        font = tkfont.Font(font=self.tail.cget('font'))
+        room = t.winfo_width() - box[0] - 12
+        shown = self.phrase
+        if font.measure(shown) > room:
+            words = re.findall(r'\s*\S+', self.phrase)
+            shown = ''
+            for w in words:
+                if font.measure(shown + w + '…') > room:
+                    break
+                shown += w
+            if not shown.strip():
+                self.close()
+                return
+            self.phrase = shown              # принять — только видимое
+            shown += '…'
+        self.tail.configure(text=shown)
         self.tail.place(x=box[0], y=box[1], bordermode='outside')
 
     def accept_phrase(self, one_word: bool = False) -> bool:

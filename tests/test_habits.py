@@ -51,3 +51,15 @@ def test_controller_continuation(ctl, order_xlsx):
         ctl.generate(raw)
     assert ctl.continuation('замена ду') == 'ги верх 18х25 тма'
     assert ctl.continuation('активация, ') == 'лигатурная'
+
+
+def test_pairs_do_not_cross_lines():
+    h = Habits(['а, явка 6 нед\nперепел', 'а, явка 6 нед\nперепел'])
+    assert h.next_phrase('явка 6 нед') == ''
+
+
+def test_reconfirmed_note_counts_once(ctl, order_xlsx):
+    ctl.import_xlsx(order_xlsx)
+    ctl.generate('активация, уникальнаяфраза тест')
+    ctl.generate('активация, уникальнаяфраза тест')      # исправил опечатку и подтвердил снова
+    assert ctl.continuation('уник') == ''

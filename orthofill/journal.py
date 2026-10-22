@@ -151,10 +151,17 @@ class Journal:
         return out
 
     def raw_notes(self, preset_id: int | None, limit: int = 2000) -> list[str]:
-        """Записи пресета из журнала, новые первыми (для привычек ввода)."""
-        return [raw or '' for (raw,) in self._db.execute(
-            'SELECT raw FROM entries WHERE preset_id IS ? ORDER BY id DESC LIMIT ?',
-            (preset_id, limit))]
+        """Записи пресета из журнала, новые первыми (для привычек ввода). Та же
+        запись, подтверждённая подряд ещё раз (исправил опечатку — Ctrl+Enter), —
+        одна: иначе фраза, написанная однажды, считалась бы привычной."""
+        out: list[str] = []
+        for (raw,) in self._db.execute(
+                'SELECT raw FROM entries WHERE preset_id IS ? ORDER BY id DESC LIMIT ?',
+                (preset_id, limit)):
+            raw = (raw or '').strip()
+            if not out or out[-1] != raw:
+                out.append(raw)
+        return out
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         row = self._db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()

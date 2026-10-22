@@ -305,3 +305,39 @@ def test_one_undo_restores_after_phrase(app):
     _key(app, 'Tab')
     app.raw_txt.edit_undo()
     assert _raw(app) == 'х, замена ду'
+
+
+def test_word_hint_after_leaving_habit(app):
+    _history(app)
+    app.ctl.learn('дубликат', '4a')
+    _type(app, 'замена ду')
+    assert app.hint_box.phrase
+    _type(app, 'б')                                    # отошёл от привычки
+    assert not app.hint_box.phrase and app.hint_box.items[0].word == 'дубликат'
+    _key(app, 'Tab')
+    assert _raw(app) == 'замена дубликат'
+
+
+def test_long_tail_fits_and_accepts_only_visible(app):
+    long = 'замена дуги верх 18х25 тма с изгибом и компенсационной петлей и ещё много слов'
+    for raw in (long, 'лигатурная', long):           # подряд одинаковые считаются за одну
+        app.ctl.generate(raw)
+    app.root.geometry('420x640')
+    app.root.update()
+    _type(app, 'активация, лигатурная, замена ду')
+    hb = app.hint_box
+    shown = hb.tail['text']
+    assert shown.endswith('…') and len(shown) < len(long)
+    _key(app, 'Tab')
+    assert len(_raw(app)) < len('активация, лигатурная, ') + len(long)
+    assert _raw(app).startswith('активация, лигатурная, замена дуги')
+    assert _raw(app) == 'активация, лигатурная, замена ду' + shown[:-1]   # ровно видимое
+
+
+def test_ctrl_space_shows_word_list_over_habit(app):
+    _history(app)
+    app.ctl.learn('лигатуры', '4d3')
+    _type(app, 'активация, лиг')
+    assert app.hint_box.phrase
+    _key(app, 'space', ctrl=True)
+    assert not app.hint_box.phrase and app.hint_box.items

@@ -33,16 +33,17 @@ class Habits:
         self._pairs: Counter = Counter()
         self._pair_fresh: dict[tuple[str, str], int] = {}
         for k, raw in enumerate(notes):
-            ph = phrases_of(raw)
-            for p in ph:
+            for p in phrases_of(raw):
                 key = _key(p)
                 self._count[key] += 1
                 self._fresh.setdefault(key, k)
                 self._forms.setdefault(key, Counter())[p] += 1
-            for a, b in zip(ph, ph[1:]):
-                pair = (_key(a), _key(b))
-                self._pairs[pair] += 1
-                self._pair_fresh.setdefault(pair, k)
+            for line in (raw or '').split('\n'):      # пары — внутри строки, не через перенос
+                ph = phrases_of(line)
+                for a, b in zip(ph, ph[1:]):
+                    pair = (_key(a), _key(b))
+                    self._pairs[pair] += 1
+                    self._pair_fresh.setdefault(pair, k)
 
     def _form(self, key: str) -> str:
         return self._forms[key].most_common(1)[0][0]
