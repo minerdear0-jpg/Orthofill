@@ -13,6 +13,8 @@ from .methods import METHOD_LABELS, WHEN_LABELS
 HEADER = 'ID_CLASS'
 SETTINGS_SHEET = 'Настройки'
 DICTIONARY_SHEET = 'Словарь'
+PHRASES_SHEET = 'Фразы'
+PHRASES_HEADER = ['Имя', 'Шаблон', 'Использовано']
 SETTINGS_HEADER = ['Код', 'Способ выбора', 'Когда в протоколе', 'По умолчанию', 'Слова',
                    'Сочетание', 'Условие', 'Не вместе с']
 COMBINE_LABELS = {'and': 'И'}       # пусто или «ИЛИ» — один вариант
@@ -59,6 +61,14 @@ class DictEntry:
 
 
 @dataclass
+class Phrase:
+    """Фраза врача: `.имя` → шаблон с полями (orthofill/phrases.py)."""
+    name: str
+    template: str
+    uses: int = 0
+
+
+@dataclass
 class Workbook:
     path: Path | None
     sha256: str
@@ -72,6 +82,7 @@ class Workbook:
     source: str = ''                # файл, из которого пресет импортирован
     dictionary: list[DictEntry] = field(default_factory=list)
     not_together: list[tuple[str, str]] = field(default_factory=list)   # пары (a, b), a < b
+    phrases: list[Phrase] = field(default_factory=list)
 
 
 def clean_code(value) -> str:
@@ -176,6 +187,10 @@ def load_workbook_file(path: str | Path) -> Workbook:
         pairs = []
     dictionary = (_read_dictionary(book[DICTIONARY_SHEET])
                   if DICTIONARY_SHEET in book.sheetnames else [])
+    phrases: list[Phrase] = []
+    if PHRASES_SHEET in book.sheetnames:
+        phrases, found = _read_phrases(book[PHRASES_SHEET])
+        problems += found
 
     wb = Workbook(
         path=path,
@@ -190,6 +205,7 @@ def load_workbook_file(path: str | Path) -> Workbook:
         source=path.name,
         dictionary=dictionary,
         not_together=pairs,
+        phrases=phrases,
     )
     normalize_references(wb)
     return wb
@@ -255,6 +271,36 @@ def _read_settings(ws, by_id: dict[str, Item]) -> tuple[list[str], list[str], li
             if a not in listed.get(b, set()):
                 notes.append(f'пара «не вместе» {a} ↔ {b} дополнена (была только у {a})')
     return problems, notes, sorted(pairs)
+
+
+def _read_phrases(ws) -> tuple[list[Phrase], list[str]]:
+    """Лист «Фразы»: Имя | Шаблон | Использовано."""
+    from .phrases import parse_template
+    out, problems, names = [], [], set()
+    for rownum, row in enumerate(ws.iter_rows(min_row=2, max_col=3, values_only=True), start=2):
+        name, template, uses = tuple(row) + (None,) * (3 - len(row))
+        if name is None or not str(name).strip():
+            continue
+        name = str(name).strip().lstrip('.')
+        if name in names:
+            problems.append(f'{PHRASES_SHEET}!A{rownum}: фраза «{name}» уже есть выше')
+            continue
+        try:
+            uses = int(uses or 0)
+        except (TypeError, ValueError):
+            problems.append(f'{PHRASES_SHEET}!C{rownum}: «{uses}» — нужно число')
+            continue
+        try:
+            parse_template(str(template or ''))
+        except ValueError as e:
+            problems.append(f'{PHRASES_SHEET}!B{rownum}: {e}')
+            continue
+        if not str(template or '').strip():
+            problems.append(f'{PHRASES_SHEET}!B{rownum}: у фразы «{name}» нет шаблона')
+            continue
+        names.add(name)
+        out.append(Phrase(name, str(template).strip(), uses))
+    return out, problems
 
 
 def _read_dictionary(ws) -> list[DictEntry]:

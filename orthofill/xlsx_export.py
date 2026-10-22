@@ -8,7 +8,8 @@ from openpyxl import Workbook as XlBook
 
 from .methods import METHOD_LABELS, WHEN_LABELS
 from .logic import format as format_condition
-from .workbook import (COMBINE_LABELS, DICTIONARY_HEADER, DICTIONARY_SHEET, HEADER, SETTINGS_HEADER,
+from .workbook import (COMBINE_LABELS, DICTIONARY_HEADER, DICTIONARY_SHEET, HEADER, PHRASES_HEADER,
+                       PHRASES_SHEET, SETTINGS_HEADER,
                        SETTINGS_SHEET, Workbook)
 
 
@@ -46,6 +47,14 @@ def export_workbook(wb: Workbook, path: Path) -> None:
         if method or when or it.default or it.words or combine or cond or apart:
             st.append([_num(it.id), method, when, it.default, ', '.join(it.words) or None,
                        combine, cond, apart])
+
+    ft = xl.create_sheet(PHRASES_SHEET)
+    ft.append(PHRASES_HEADER)
+    for ph in wb.phrases:
+        ft.append([ph.name, ph.template, ph.uses])
+    ft.column_dimensions['A'].width = 16
+    ft.column_dimensions['B'].width = 70
+    ft.column_dimensions['C'].width = 14
 
     dt = xl.create_sheet(DICTIONARY_SHEET)
     dt.append(DICTIONARY_HEADER)

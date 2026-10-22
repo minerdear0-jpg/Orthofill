@@ -270,6 +270,14 @@ class App:
         self._learned: str | None = None
         # вопрос «Каким словом это было в записи?» — не блокирует
         self.learn_bar = ttk.Frame(st)
+        # предложение «сделать фразой» (0.3 beta 3) — не блокирует
+        self.phrase_bar = ttk.Frame(st)
+        self.phrase_lbl = ttk.Label(self.phrase_bar, text='', wraplength=520, justify='left')
+        self.phrase_lbl.pack(side='left')
+        ttk.Button(self.phrase_bar, text='Нет', command=self._phrase_no).pack(side='right')
+        ttk.Button(self.phrase_bar, text='Да', style='Accent.TButton',
+                   command=self._phrase_yes).pack(side='right', padx=(6, 6))
+        self._phrase_prop = None
         self._learn_code: str | None = None
         self._learn_cands: list[str] = []
         self.warn_lbl = ttk.Label(st, text='', foreground=WARN_TEXT, justify='left')
@@ -587,6 +595,7 @@ class App:
             return
         self._cancel_live()
         self._clear_tokens()                # коды токенов — от прежнего пресета
+        self._phrase_no_offer()             # предложение — для прежнего пресета
         out = self.out_txt.get('1.0', 'end-1c')
         edited = self.ctl.needs_confirm_regenerate(out)
         prev = self.ctl.preset_id
@@ -775,6 +784,40 @@ class App:
         self._show_unknown([])
         if r.copied:      # подчёркивание — после показа протокола, Ctrl+Enter не ждёт
             self.root.after_idle(lambda: self._show_unknown(self.ctl.find_unknown()))
+        self.phrase_bar.pack_forget()
+        if r.copied:      # предложение «сделать фразой» — тоже после показа (Ctrl+Enter не ждёт)
+            raw = self.raw_txt.get('1.0', 'end-1c')
+            self.root.after_idle(lambda: self._offer_phrase(raw))
+
+    # ---------- «сделать фразой?» ----------
+    def _offer_phrase(self, raw: str):
+        from .phrases import parse_template, render
+        self.phrase_bar.pack_forget()
+        prop = self.ctl.proposal(raw) if raw.strip() else None
+        self._phrase_prop = prop
+        if prop:
+            name, template, n = prop
+            sample = render(parse_template(template))
+            self.phrase_lbl.configure(text=f'Вы часто пишете «{sample}» ({n} раз) — '
+                                           f'сделать фразой «.{name}»?')
+            self.phrase_bar.pack(anchor='w', fill='x', pady=(4, 0), after=self.status_lbl.master)
+
+    def _phrase_no_offer(self):
+        self._phrase_prop = None
+        self.phrase_bar.pack_forget()
+
+    def _phrase_yes(self):
+        if self._phrase_prop:
+            self._status(self.ctl.accept_proposal(self._phrase_prop))
+            self._show_file_status()
+        self._phrase_prop = None
+        self.phrase_bar.pack_forget()
+
+    def _phrase_no(self):
+        if self._phrase_prop:
+            self.ctl.decline_proposal(self._phrase_prop)
+        self._phrase_prop = None
+        self.phrase_bar.pack_forget()
 
     # ---------- непонятые слова ----------
     def _show_unknown(self, spans):
@@ -1194,6 +1237,7 @@ class App:
         — пересобрать (иначе пустой «показанный» протокол выглядит как ручная правка)."""
         self._cancel_live()
         self._clear_tokens()
+        self._phrase_no_offer()
         if self.raw_txt.get('1.0', 'end-1c').strip() and not self.live_frozen:
             self._live_show()
         elif not self.live_frozen:

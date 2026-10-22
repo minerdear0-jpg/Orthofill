@@ -177,6 +177,21 @@ class EditorWindow:
         self.words_tab.heading('#0', text='Слово')
         self.words_tab.bind('<Double-1>', lambda e: self._goto(
             self.words_tab.set(self.words_tab.focus(), 'code')))
+        self.phrases_page, self.phrases_tab = self._tab_tree(
+            'Фразы', (('Удалить фразу', self._delete_selected_phrase),),
+            columns=(('template', 'Шаблон', 460), ('uses', 'Использовано', 100)))
+        self.phrases_tab.heading('#0', text='Имя')
+        form = ttk.Frame(self.phrases_page)
+        form.pack(fill='x', side='bottom', pady=(6, 0), before=self.phrases_tab)
+        ttk.Label(form, text='.').pack(side='left')
+        self.phrase_name = ttk.Entry(form, width=12)
+        self.phrase_name.pack(side='left')
+        self.phrase_tpl = ttk.Entry(form)
+        self.phrase_tpl.pack(side='left', fill='x', expand=True, padx=(6, 6))
+        ttk.Button(form, text='Добавить / изменить', command=self._apply_phrase_form).pack(side='left')
+        self.phrase_err = ttk.Label(self.phrases_page, text='', foreground=WARN_TEXT)
+        self.phrase_err.pack(fill='x', side='bottom', before=form)
+        self.phrases_tab.bind('<<TreeviewSelect>>', lambda e: self._fill_phrase_form())
         self.lint_page, self.lint_tab = self._tab_tree(
             'Проверка', (('Поменять коды местами', self._fix_selected),), columns=(('level', 'Вид', 150),))
         self.lint_tab.heading('#0', text='Находка')
@@ -299,6 +314,12 @@ class EditorWindow:
                      values=(_ws(e.item_text)[:80], e.code, (e.added or '')[:10], e.hits))
         nb.tab(self.words_page, text=f'Слова врача ({len(wb.dictionary)})')
 
+        t = self.phrases_tab
+        t.delete(*t.get_children())
+        for ph in wb.phrases:
+            t.insert('', 'end', iid=f'ph:{ph.name}', text='.' + ph.name, values=(ph.template, ph.uses))
+        nb.tab(self.phrases_page, text=f'Фразы ({len(wb.phrases)})')
+
         t = self.lint_tab
         t.delete(*t.get_children())
         for k, f in enumerate(self.findings):
@@ -331,6 +352,37 @@ class EditorWindow:
         if sel:
             self.draft.delete_word(sel[0].split(':', 1)[1])
             self._done()
+
+    def add_phrase(self, name: str, template: str) -> str | None:
+        """Добавить/изменить фразу; ошибка шаблона — текстом (и под формой)."""
+        err = self.draft.add_phrase(name, template)
+        self.phrase_err.configure(text=err or '')
+        if err is None:
+            self._done()
+        return err
+
+    def delete_phrase(self, name: str):
+        self.draft.delete_phrase(name)
+        self._done()
+
+    def _delete_selected_phrase(self):
+        sel = self.phrases_tab.selection()
+        if sel:
+            self.delete_phrase(sel[0].split(':', 1)[1])
+
+    def _apply_phrase_form(self):
+        self.add_phrase(self.phrase_name.get(), self.phrase_tpl.get())
+
+    def _fill_phrase_form(self):
+        sel = self.phrases_tab.selection()
+        if not sel:
+            return
+        name = sel[0].split(':', 1)[1]
+        ph = next((p for p in self.draft.wb.phrases if p.name == name), None)
+        if ph:
+            for w, v in ((self.phrase_name, ph.name), (self.phrase_tpl, ph.template)):
+                w.delete(0, 'end')
+                w.insert(0, v)
 
     def fix_finding(self, f):
         if f.kind == JAW_FIX:

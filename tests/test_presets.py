@@ -103,7 +103,7 @@ def test_migrates_v1_db(tmp_path):
     con.commit()
     con.close()
     j = Journal(db)
-    assert j._db.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert j._db.execute("PRAGMA user_version").fetchone()[0] == 4
     assert j._db.execute("SELECT raw FROM entries").fetchone()[0] == "лигатурная"
     assert j.get_setting("last_file") == "C:/a.xlsx"
     j._db.execute("SELECT preset_id FROM entries")      # столбец появился
@@ -163,7 +163,7 @@ def test_migrates_v2_db(tmp_path):
     con.close()
     j = Journal(db)
     cols = {r[1] for r in j._db.execute("PRAGMA table_info(preset_items)")}
-    assert j._db.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert j._db.execute("PRAGMA user_version").fetchone()[0] == 4
     assert {"combine", "condition_json"} <= cols
     j._db.execute("SELECT a, b FROM not_together")
     Journal(db)
