@@ -73,3 +73,8 @@ def test_proposal_only_for_phrase_in_this_note(ctl, order_xlsx):
     for raw in NOTES:
         ctl.generate(raw)
     assert ctl.proposal('активация, перепел') is None
+
+
+def test_single_value_slot_is_plain_text():
+    notes = [f'активация, замена дуги верх {n}х25 тма' for n in (16, 17, 18, 16, 18)]
+    assert propose(notes, [])[0][1] == 'замена дуги верх {16х25|18х25|17х25} тма'

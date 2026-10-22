@@ -115,6 +115,14 @@ class PresetStore:
         в журнал импортов не пишется; пресет — «есть то, чего нет в xlsx»."""
         refs, words = draft.replay(self._load_references(preset_id),
                                    self._load_dictionary(preset_id))
+        # фразы, добавленные в главном окне, пока черновик был открыт, — не терять
+        phrases = list(draft.wb.phrases)
+        if not any(op[0] == 'import' for op in draft.ops):
+            have = {p.name for p in phrases}
+            gone = {op[1] for op in draft.ops if op[0] == 'phrase_del'}
+            phrases += [p for p in self._load_phrases(preset_id)
+                        if p.name not in have and p.name not in gone]
+        draft.wb.phrases = phrases
         with self._db:
             self._write_items(preset_id, draft.wb.items, draft.wb.not_together, draft.wb.phrases)
             self._write_references(preset_id, refs)
@@ -179,6 +187,10 @@ class PresetStore:
                 ' ORDER BY pos', (preset_id, case_id))]
             refs.append(ReferenceCase(case_id, raw or '', lines))
         return refs
+
+    def _load_phrases(self, preset_id: int) -> list[Phrase]:
+        return [Phrase(n, t, u) for n, t, u in self._db.execute(
+            'SELECT name, template, uses FROM phrases WHERE preset_id=? ORDER BY pos', (preset_id,))]
 
     def _load_dictionary(self, preset_id: int) -> list[DictEntry]:
         return [DictEntry(w, t, c or '', a or '', h) for w, t, c, a, h in self._db.execute(

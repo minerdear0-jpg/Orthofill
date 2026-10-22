@@ -118,3 +118,59 @@ def test_one_undo_restores_command(ph):
 def test_use_counted(ph):
     _expand(ph)
     assert ph.ctl.presets.load(ph.ctl.preset_id).phrases[0].uses == 1
+
+
+# ---------- Task 4 ----------
+NOTES = ['активация, замена дуги верх 18х25 тма, перепел', 'активация, замена дуги верх 18х25 тма',
+         'лигатурная, замена дуги низ 16х25 тма', 'активация, замена дуги верх 16х25 тма',
+         'рабочий, замена дуги верх 18х25 тма']
+
+
+def test_proposal_bar_after_confirm(app):
+    for raw in NOTES:
+        app.ctl.generate(raw)
+    app.raw_txt.insert('1.0', 'активация, замена дуги низ 18х25 тма')
+    app.generate()
+    app.root.update()
+    assert app.phrase_bar.winfo_manager() and '.замена' in app.phrase_lbl['text']
+    app._phrase_yes()
+    assert not app.phrase_bar.winfo_manager()
+    assert [p.name for p in app.ctl.workbook.phrases] == ['замена']
+    app.raw_txt.delete('1.0', 'end')
+    _expand(app)
+    assert _raw(app) == 'замена дуги верх 18х25 тма'
+
+
+def test_proposal_declined_not_again(app):
+    for raw in NOTES:
+        app.ctl.generate(raw)
+    app.raw_txt.insert('1.0', 'активация, замена дуги низ 18х25 тма')
+    app.generate()
+    app.root.update()
+    app._phrase_no()
+    assert not app.phrase_bar.winfo_manager()
+    app.generate()
+    app.root.update()
+    assert not app.phrase_bar.winfo_manager()
+
+
+def test_editor_phrases_tab(app):
+    ed = app.open_editor('4a')
+    assert ed.notebook.tab(ed.phrases_page, 'text') == 'Фразы (0)'
+    assert ed.add_phrase('акт', 'активация, {лигатурная|самолиг}') is None
+    assert [p.name for p in ed.draft.wb.phrases] == ['акт']
+    assert 'не закрыта' in ed.add_phrase('плохо', 'замена {верх')
+    ed.undo()
+    assert ed.draft.wb.phrases == []
+    ed.add_phrase('акт', 'активация, {лигатурная|самолиг}')
+    ed.delete_phrase('акт')
+    assert ed.draft.wb.phrases == []
+
+
+def test_save_draft_keeps_phrase_added_meanwhile(ctl, order_xlsx):
+    ctl.import_xlsx(order_xlsx)
+    d = ctl.open_draft()
+    ctl.presets.add_phrase(ctl.preset_id, Phrase('замена', TPL))      # «Да» в главном окне
+    d.set_text('4a', 'Осмотр.')
+    ctl.save_draft()
+    assert [p.name for p in ctl.workbook.phrases] == ['замена']

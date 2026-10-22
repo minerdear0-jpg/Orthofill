@@ -107,9 +107,11 @@ def propose(notes: list[str], existing) -> list[tuple[str, str, int]]:
         base = uses[0]
         parts = []
         for i, w in enumerate(base):
-            if i in slots:
+            if i in slots and len(values[slots.index(i)]) > 1:
                 vals = values[slots.index(i)]
                 parts.append('{' + '|'.join(v for v, _ in vals.most_common()) + '}')
+            elif i in slots:                # всегда одно и то же — просто текст
+                parts.append(values[slots.index(i)].most_common(1)[0][0])
             else:
                 parts.append(w)
         name = next(w for w in shape.split() if w != '{}').strip('.,;:')

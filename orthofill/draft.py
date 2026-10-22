@@ -212,6 +212,33 @@ class Draft:
         inner = {code} | {it.id for it in self.wb.items if inside(it.id, code)}
         return [it.id for it in self.wb.items if it.condition and refs(it.condition) & inner]
 
+    # ---------- фразы врача (0.3 beta 3) ----------
+    def add_phrase(self, name: str, template: str) -> str | None:
+        """Добавить или заменить фразу. Ошибка шаблона — текстом, без правки."""
+        from .phrases import parse_template
+        from .workbook import Phrase
+        name = name.strip().lstrip('.')
+        if not name:
+            return 'нужно имя фразы'
+        try:
+            parse_template(template)
+        except ValueError as e:
+            return str(e)
+        self._begin()
+        old = next((p for p in self.wb.phrases if p.name == name), None)
+        if old is not None:
+            old.template = template.strip()
+        else:
+            self.wb.phrases.append(Phrase(name, template.strip()))
+        self.ops.append(('phrase_set', name))
+        return None
+
+    def delete_phrase(self, name: str) -> None:
+        if any(p.name == name for p in self.wb.phrases):
+            self._begin()
+            self.wb.phrases[:] = [p for p in self.wb.phrases if p.name != name]
+            self.ops.append(('phrase_del', name))
+
     def swap(self, a: str, b: str) -> None:
         self._codes(swap_map(a, b, self.wb))
 
