@@ -428,6 +428,18 @@ class Controller:
             self._hint_key = key
         return self._hint_index.suggest(prefix, min_len=1 if force else 3)
 
+    def continuation(self, text_before: str) -> str:
+        """Серый хвост привычной фразы / следующая фраза — по записям пресета."""
+        from .habits import Habits, continuation
+        if self.workbook is None:
+            return ''
+        n = self.journal._db.execute('SELECT COUNT(*) FROM entries').fetchone()[0]
+        key = (self.preset_id, n)
+        if getattr(self, '_habits_key', None) != key:
+            self._habits = Habits(self.journal.raw_notes(self.preset_id))
+            self._habits_key = key
+        return continuation(text_before, self._habits)
+
     # ---------- редактор пресета ----------
     def open_draft(self, preset_id: int | None = None) -> Draft:
         """Черновик пресета для редактора — один на программу."""

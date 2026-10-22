@@ -150,6 +150,12 @@ class Journal:
                 out[w] = out.get(w, 0) + 1
         return out
 
+    def raw_notes(self, preset_id: int | None, limit: int = 2000) -> list[str]:
+        """Записи пресета из журнала, новые первыми (для привычек ввода)."""
+        return [raw or '' for (raw,) in self._db.execute(
+            'SELECT raw FROM entries WHERE preset_id IS ? ORDER BY id DESC LIMIT ?',
+            (preset_id, limit))]
+
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         row = self._db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
         return row[0] if row else default
