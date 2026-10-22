@@ -378,12 +378,22 @@ class Controller:
     @property
     def shell_mode(self) -> bool:
         """Запись как оболочка — для текущего пресета (переключатель)."""
-        return self.preset_id is not None and \
-            self.journal.get_setting(f'shell:{self.preset_id}') == '1'
+        if self.preset_id is None:
+            return False
+        cache = self.__dict__.setdefault('_shell_cache', {})
+        if self.preset_id not in cache:         # спрашивается на каждое нажатие — из памяти
+            cache[self.preset_id] = self.journal.get_setting(f'shell:{self.preset_id}') == '1'
+        return cache[self.preset_id]
 
     def set_shell_mode(self, on: bool) -> None:
         if self.preset_id is not None:
             self.journal.set_setting(f'shell:{self.preset_id}', '1' if on else '0')
+            self.__dict__.setdefault('_shell_cache', {})[self.preset_id] = on
+
+    def shell_synonyms(self) -> dict[str, str]:
+        """Слова врача (словарь) — синонимы узлов в оболочке."""
+        wb = self.workbook
+        return {e.word: e.code for e in wb.dictionary if e.code} if wb else {}
 
     def _build(self, raw: str, tokens=()) -> Protocol:
         if self.shell_mode:

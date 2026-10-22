@@ -175,6 +175,8 @@ class App:
         f.pack(fill='both', expand=True)
         from .hintbox import HintBox
         self.hint_box = HintBox(self, self.raw_txt)
+        from .shellbox import ShellBox
+        self.shell_box = ShellBox(self, self.raw_txt)   # режим «Оболочка» (0.5)
         from .behavior import NoteStats
         self.note_stats = NoteStats()
 
@@ -929,7 +931,10 @@ class App:
         t = self.raw_txt
         for tag in ('unknown', 'learned'):
             t.tag_remove(tag, '1.0', 'end')
+        cur = t.index('insert').split('.')[0]
         for s, e, _ in spans:
+            if self.ctl.shell_mode and t.index(f'1.0+{s}c').split('.')[0] == cur:
+                continue            # строку оболочки ещё набирают — не «непонята»
             t.tag_add('unknown', f'1.0+{s}c', f'1.0+{e}c')
 
     def _unmark_unknown(self, e):
@@ -1452,6 +1457,13 @@ class App:
         out = self.note_stats.summary()
         self.note_stats.reset()
         return out
+
+    def _apply_shell_mode(self):
+        """Режим записи сменился (флажок или пресет): подсказки слов или оболочка."""
+        self.hint_box.close()
+        self.shell_box.close()
+        self.shell_box.update()
+        self._schedule_live()
 
     def _session_start(self):
         import platform

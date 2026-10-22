@@ -90,6 +90,24 @@ def parse_line(wb: Workbook, line: str) -> Path | None:
     return tuple(path)
 
 
+def split_line(wb: Workbook, line: str) -> tuple[Path | None, str]:
+    """Строка в работе: (выбранные уровни — всё до последнего « › »; набранное
+    после него). Уровни, которые не находятся в дереве, — None."""
+    sep = SEP.strip()
+    if sep not in line:
+        return (), line
+    head, _, typed = line.rpartition(sep)
+    parts = [_ws(p) for p in head.split(sep)]
+    path: list[str] = []
+    for part in parts:
+        hit = next((c for c in children_of(wb, path[-1] if path else None)
+                    if _ws(c.text) == part), None)
+        if hit is None:
+            return None, typed.lstrip()
+        path.append(hit.id)
+    return tuple(path), typed.lstrip()
+
+
 def _endpoints(wb: Workbook, start: Path) -> list[Path]:
     """Все конечные пути внутри start, в порядке файла."""
     out: list[Path] = []
