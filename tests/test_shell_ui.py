@@ -115,8 +115,10 @@ def test_backspace_undoes_expand(sh):
 
 
 def test_tab_on_empty_line(sh):
+    """0.5 b2: Tab на пустой строке принимает предсказание (без истории — первое по файлу)."""
+    sh.shell_box.update()
     _key(sh, 'Tab')
-    assert _raw(sh) == ''
+    assert _raw(sh) == format_path(_wb(sh), ('1', '1a'))
 
 
 def test_hints_off_in_shell(sh):
@@ -324,3 +326,98 @@ def test_no_phrase_offer_and_no_learning_in_shell(sh, monkeypatch):
     sh._on_add_query()
     sh._add_selected(0)
     assert not asked
+
+
+# ---------- 0.5 b2: предсказание ----------
+def _history(sh, *notes):
+    for paths in notes:
+        sh.ctl.generate('\n'.join(format_path(_wb(sh), p) for p in paths))
+    sh.raw_txt.delete('1.0', 'end')
+
+
+def _finish_line(sh, path):
+    _type(sh, format_path(_wb(sh), path))
+    _key(sh, 'Return')
+
+
+def test_prediction_ghost_on_empty_line(sh):
+    _finish_line(sh, ('2', '2b', '2b2'))
+    sb = sh.shell_box
+    assert sb.prediction is not None and sb.prediction.path == ('2', '2c')
+    assert 'Этап' in sb.ghost and _raw(sh).endswith('\n')
+
+
+def test_tab_accepts_prediction_group(sh):
+    _history(sh, [('2', '2b', '2b2'), ('2', '2c', '2c3')], [('2', '2b', '2b2'), ('2', '2c', '2c3')])
+    _finish_line(sh, ('2', '2b', '2b2'))
+    _key(sh, 'Tab')
+    assert _raw(sh).split('\n')[1] == format_path(_wb(sh), ('2', '2c')) + ' › '
+    sb = sh.shell_box
+    assert sb.list_shown and sb.choices[sb.selected][-1] == '2c3'
+
+
+def test_ctrl_right_one_level(sh):
+    _finish_line(sh, ('2', '2b', '2b2'))
+    _key(sh, 'Control-Right')
+    assert _raw(sh).split('\n')[1] == format_path(_wb(sh), ('2',)) + ' › '
+    _key(sh, 'Control-Right')
+    assert _raw(sh).split('\n')[1] == format_path(_wb(sh), ('2', '2c')) + ' › '
+
+
+def test_question_lists_predictions(sh):
+    _finish_line(sh, ('2', '2b', '2b2'))
+    _key(sh, 'KeyPress', keysym='question')
+    sb = sh.shell_box
+    assert sb.list_shown and sb.choices[0] == ('2', '2c') and len(sb.choices) <= 12
+
+
+def test_predict_middle_line(sh):
+    wb = _wb(sh)
+    sh.raw_txt.insert('1.0', format_path(wb, ('2', '2b', '2b2')) + '\n\n' + format_path(wb, ('2', '2c', '2c2')))
+    sh.raw_txt.mark_set('insert', '2.0')
+    sh.shell_box.update()
+    assert sh.shell_box.prediction.path == ('2', '2d')        # 2c уже есть ниже
+
+
+def test_typing_dismisses_prediction(sh):
+    _finish_line(sh, ('2', '2b', '2b2'))
+    _type(sh, 'д')
+    assert sh.shell_box.prediction is None and not sh.shell_box.ghost.startswith('Анамнез')
+    assert _raw(sh).split('\n')[1] == 'д'
+
+
+def test_enter_ignores_prediction(sh):
+    _finish_line(sh, ('2', '2b', '2b2'))
+    _key(sh, 'Return')
+    assert _raw(sh).split('\n')[1:] == ['', '']
+
+
+def test_lists_ranked(sh):
+    _history(sh, *([[('4', '4b', '4b18')]] * 3))
+    _type(sh, format_path(_wb(sh), ('4', '4b')) + ' › ')
+    _key(sh, 'KeyPress', keysym='question')
+    assert sh.shell_box.choices[0][-1] == '4b18'
+
+
+def test_predict_events(sh, monkeypatch):
+    seen = []
+    monkeypatch.setattr(sh.ctl, 'track', lambda e, **d: seen.append((e, d)))
+    _finish_line(sh, ('2', '2b', '2b2'))       # первую строку врач набрал сам — «ignored»
+    seen.clear()
+    _key(sh, 'Tab')
+    outcomes = [d['outcome'] for e, d in seen if e == 'shell' and d.get('action') == 'predict']
+    assert outcomes == ['accepted']
+    sh.raw_txt.delete('1.0', 'end')
+    _finish_line(sh, ('2', '2b', '2b2'))
+    seen.clear()
+    _type(sh, 'д')
+    assert [d['outcome'] for e, d in seen if e == 'shell' and d.get('action') == 'predict'] == ['ignored']
+
+
+def test_modifier_release_keeps_dwell(sh):
+    """Отпустили Alt/Shift/переключили раскладку после ← — остановка на уровне не сбивается."""
+    _line_at(sh, ('4', '4b', '4b5'))
+    _key(sh, 'Left')
+    for ks in ('Alt_L', 'ISO_Next_Group', 'Caps_Lock', 'a'):
+        sh.raw_txt.event_generate('<KeyRelease>', keysym=ks, when='now')
+    assert sh.shell_box._dwell_job is not None
