@@ -198,6 +198,20 @@ class PresetStore:
             db.execute('UPDATE presets SET dirty=1 WHERE id=?', (preset_id,))
         return case_id
 
+    # ---------- фразы врача ----------
+    def add_phrase(self, preset_id: int, phrase) -> None:
+        with self._db:
+            pos = self._db.execute('SELECT COALESCE(MAX(pos), -1) + 1 FROM phrases WHERE preset_id=?',
+                                   (preset_id,)).fetchone()[0]
+            self._db.execute('INSERT OR REPLACE INTO phrases VALUES (?,?,?,?,?,?)',
+                             (preset_id, pos, phrase.name, phrase.template, phrase.uses, _now()))
+            self._db.execute('UPDATE presets SET dirty=1 WHERE id=?', (preset_id,))
+
+    def count_phrase_use(self, preset_id: int, name: str) -> None:
+        with self._db:
+            self._db.execute('UPDATE phrases SET uses = uses + 1 WHERE preset_id=? AND name=?',
+                             (preset_id, name))
+
     # ---------- словарь врача ----------
     @staticmethod
     def norm_word(word: str) -> str:

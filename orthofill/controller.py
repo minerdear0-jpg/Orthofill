@@ -440,6 +440,51 @@ class Controller:
             self._habits_key = key
         return continuation(text_before, self._habits)
 
+    # ---------- фразы врача (SmartPhrase) ----------
+    def phrase_hints(self, prefix: str) -> list:
+        """Фразы пресета для «.имя»: начало имени → подсказки «.имя → текст»."""
+        from .hints import Hint
+        from .phrases import parse_template, render
+        wb = self.workbook
+        if wb is None:
+            return []
+        p = prefix.lower()
+        return [Hint('.' + ph.name, render(parse_template(ph.template)), 'phrase')
+                for ph in sorted(wb.phrases, key=lambda x: -x.uses)
+                if ph.name.lower().startswith(p)][:7]
+
+    def proposal(self, raw: str):
+        """Фраза записи, которую врач пишет снова и снова с разными числами —
+        (имя, шаблон, сколько раз) — или None."""
+        import json
+        from .habits import phrases_of
+        from .phrases import propose, shape_of
+        wb = self.workbook
+        if wb is None:
+            return None
+        declined = set(json.loads(self.journal.get_setting('phrase_declined', '[]')))
+        here = {shape_of(p) for p in phrases_of(raw)}
+        for name, template, n in propose(self.journal.raw_notes(self.preset_id), wb.phrases):
+            shape = shape_of(template)
+            if shape in here and shape not in declined:
+                return name, template, n
+        return None
+
+    def accept_proposal(self, prop) -> str:
+        from .workbook import Phrase
+        name, template, _ = prop
+        self.presets.add_phrase(self.preset_id, Phrase(name, template))
+        self._log('phrase_add', name=name, template=template, preset=self._preset_ref())
+        self._reload()
+        return f'Фраза «.{name}» добавлена: наберите .{name} и Tab'
+
+    def decline_proposal(self, prop) -> None:
+        import json
+        from .phrases import shape_of
+        declined = json.loads(self.journal.get_setting('phrase_declined', '[]'))
+        declined.append(shape_of(prop[1]))
+        self.journal.set_setting('phrase_declined', json.dumps(declined, ensure_ascii=False))
+
     # ---------- редактор пресета ----------
     def open_draft(self, preset_id: int | None = None) -> Draft:
         """Черновик пресета для редактора — один на программу."""
