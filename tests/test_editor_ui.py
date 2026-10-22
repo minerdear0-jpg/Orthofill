@@ -299,3 +299,91 @@ def test_main_close_asks_about_unsaved_editor(app, monkeypatch):
     ed.add_variant()
     app.close()
     assert app.root.winfo_exists() and ed.top.winfo_exists()
+
+
+# ---------- 0.2 beta 5: логика ----------
+def test_logic_column_and_filter(app):
+    ed = app.open_editor('4h1')
+    assert ed.tree.set('4h1', 'logic') == 'если'          # угаданное условие
+    ed.logic_only.set(True)
+    ed.refresh()
+    assert ed.tree.exists('4h1') and ed.tree.exists('4') and not ed.tree.exists('4a')
+    ed.logic_only.set(False)
+    ed.refresh()
+    assert ed.tree.exists('4a')
+
+
+def test_edit_condition_rows(app):
+    ed = app.open_editor('4a')
+    ed.when_var.set('по условию')
+    ed._on_when()
+    ed.add_cond_row()
+    ed.cond_rows[0].field_var.set('2b  Тип системы')
+    ed._on_cond_field(0)
+    assert '= лигатурная' in ed.cond_rows[0].value_cb['values']
+    ed.cond_rows[0].value_var.set('= лигатурная')
+    ed.apply_condition()
+    assert ed.draft.wb.by_id['4a'].condition == {'all': [{'field': '2b', 'is': '2b2'}]}
+    assert ed.tree.set('4a', 'logic') == 'если' and '2b = 2b2' in ed.xlsx_lbl['text']
+    ed.cond_rows[0].not_var.set(True)
+    ed.apply_condition()
+    assert ed.draft.wb.by_id['4a'].condition == {'all': [{'field': '2b', 'is': '2b2', 'not': True}]}
+    ed.remove_cond_row(0)
+    assert ed.draft.wb.by_id['4a'].condition is None
+
+
+def test_complex_condition_is_read_only(app):
+    ed = app.open_editor('4a')
+    ed.draft.set_condition('4a', {'all': [{'any': [{'field': '2b', 'is': '2b1'},
+                                                   {'field': '2b', 'is': '2b2'}]},
+                                          {'field': '4j', 'mentioned': True}]})
+    ed.refresh()
+    ed.select('4a')
+    assert not ed.cond_rows and 'правится в xlsx' in ed.cond_note['text']
+
+
+def test_pairs(app):
+    ed = app.open_editor('4h1')
+    ed.add_pair('4h2')
+    assert ('4h1', '4h2') in ed.draft.wb.not_together and ed.tree.set('4h2', 'logic').endswith('≠')
+    assert ed.pairs_list == ['4h2'] and '4h2' in ed.xlsx_lbl['text']
+    ed.remove_pair('4h2')
+    assert not ed.draft.wb.not_together and ed.pairs_list == []
+
+
+def test_combine(app):
+    ed = app.open_editor('4f')
+    ed.combine_var.set('И — все упомянутые варианты')
+    ed._on_combine()
+    assert ed.draft.wb.by_id['4f'].combine == 'and' and ed.tree.set('4f', 'logic') == 'И'
+
+
+def test_broken_condition_shown(app, monkeypatch):
+    asked = []
+    monkeypatch.setattr(app, '_choice', lambda t, text, b: asked.append(text) or 'delete')
+    ed = app.open_editor('4a')
+    ed.draft.set_condition('4a', {'all': [{'field': '4e', 'mentioned': True}]})
+    ed.refresh()
+    ed.select('4e')
+    ed.delete_selected()
+    assert any('ссылаются условия: 4a' in a for a in asked)
+    ed.select('4a')
+    assert ed.tree.set('4a', 'logic').startswith('⚠')
+    assert any('пункта нет' in r.field_var.get() for r in ed.cond_rows)
+
+
+def test_reference_counter_for_item(app):
+    ed = app.open_editor('4a')
+    assert ed.refs_lbl['text'] == 'по эталонам: выводится в 1, ожидается в 1'
+    ed.when_var.set('по условию')
+    ed._on_when()                                      # условия нет → не выводится
+    assert ed.refs_lbl['text'] == 'по эталонам: выводится в 0, ожидается в 1'
+
+
+def test_props_scroll_in_narrow(app):
+    ed = app.open_editor('4h1')
+    ed.top.geometry('560x700')
+    _shown(ed)
+    ed.select('4h1')
+    ed.top.update()
+    assert ed.props_canvas.bbox('all')[3] > ed.props_canvas.winfo_height()

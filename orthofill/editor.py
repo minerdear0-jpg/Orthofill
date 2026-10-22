@@ -13,6 +13,7 @@ from tkinter import filedialog
 from .addition import row_text, search_items
 from .codes import inside
 from .lint import JAW_FIX, LEVEL_LABELS
+from .logic import format as format_condition, is_simple, refs as condition_refs
 from .lint import lint
 from .methods import METHOD_LABELS, WHEN_LABELS
 from .ui import ACCENT, MUTED, TITLE, WARN_TEXT
@@ -20,6 +21,29 @@ from .ui import ACCENT, MUTED, TITLE, WARN_TEXT
 _KIND = {'section': 'Раздел', 'group': 'Группа', 'variant': 'Вариант', 'single': 'Пункт'}
 _NO_DEFAULT = '— не выводить, если врач не написал —'
 _RULE_DEFAULT = '— как решит правило —'
+_COMBINE = {None: 'ИЛИ — один вариант', 'and': 'И — все упомянутые варианты'}
+_JOIN = {'all': 'все строки', 'any': 'любая строка'}
+_MENTIONED = 'упомянут'
+
+
+class _CondRow:
+    """Строка условия в окне: ☐ НЕ · поле · значение · ✕."""
+
+    def __init__(self, not_var, field_var, value_var, value_cb):
+        self.not_var, self.field_var, self.value_var, self.value_cb = \
+            not_var, field_var, value_var, value_cb
+
+
+def _short_variants(group) -> dict[str, str]:
+    """Вариант → текст без общего начала соседей и точки: «вестибулярная
+    лигатурная.» → «лигатурная» (чтобы список значений не обрезался)."""
+    texts = [_ws(c.text).split() for c in group.children]
+    common = 0
+    while texts and all(len(t) > common + 1 and t[common].lower() == texts[0][common].lower()
+                        for t in texts):
+        common += 1
+    return {c.id: ' '.join(t[common:]).rstrip('.:;, ') or _ws(c.text)
+            for c, t in zip(group.children, texts)}
 
 
 def _ws(text: str) -> str:
@@ -55,6 +79,8 @@ class EditorWindow:
 
         self.bottom = bottom = ttk.Frame(top, padding=(14, 6, 14, 10))
         bottom.pack(fill='x', side='bottom')
+        self.bottom_right = ttk.Frame(bottom)      # первым — в узком окне не вытесняется
+        self.bottom_right.pack(side='right')
         self.undo_btn = ttk.Button(bottom, text='↶ Отменить', command=self.undo)
         self.undo_btn.pack(side='left')
         self.redo_btn = ttk.Button(bottom, text='↷ Вернуть', command=self.redo)
@@ -63,8 +89,6 @@ class EditorWindow:
         self.changed_lbl.pack(side='left', padx=(12, 0))
         self.status_lbl = ttk.Label(bottom, text='', foreground=MUTED)
         self.status_lbl.pack(side='left', padx=(12, 0))
-        self.bottom_right = ttk.Frame(bottom)
-        self.bottom_right.pack(side='right')
         ttk.Button(self.bottom_right, text='Отменить изменения',
                    command=self.discard).pack(side='left')
         ttk.Button(self.bottom_right, text='Сохранить', style='Accent.TButton',
@@ -83,18 +107,27 @@ class EditorWindow:
         pane = ttk.PanedWindow(items_tab, orient='vertical' if narrow else 'horizontal')
         pane.pack(fill='both', expand=True)
         left = ttk.Frame(pane)
-        self.props = ttk.Frame(pane, padding=(12, 0, 0, 0))
+        right = ttk.Frame(pane)
         pane.add(left, weight=3)
-        pane.add(self.props, weight=2)
+        pane.add(right, weight=2)
+        # свойства — с прокруткой: с условием и парами они не помещаются на 560 px
+        bg = ttk.Style().lookup('TFrame', 'background') or '#fafafa'
+        self.props_canvas = cv = tk.Canvas(right, highlightthickness=0, borderwidth=0,
+                                           background=bg, width=360)
+        psb = ttk.Scrollbar(right, orient='vertical', command=cv.yview)
+        cv.configure(yscrollcommand=psb.set)
+        psb.pack(side='right', fill='y')
+        cv.pack(side='left', fill='both', expand=True)
+        self.props = ttk.Frame(cv, padding=(12, 0, 8, 8))
+        win_id = cv.create_window(0, 0, window=self.props, anchor='nw')
+        self.props.bind('<Configure>', lambda e: cv.configure(scrollregion=cv.bbox('all')))
+        cv.bind('<Configure>', lambda e: cv.itemconfigure(win_id, width=e.width))
+        for w in (cv, self.props):
+            w.bind('<Enter>', lambda e: cv.bind_all('<MouseWheel>', self._on_wheel))
+            w.bind('<Leave>', lambda e: cv.unbind_all('<MouseWheel>'))
         self.pane = pane
-        if not narrow:      # дереву — больше места: тексты пунктов длинные
-            def place_sash(e=None):
-                if top.winfo_width() > 1:
-                    pane.sashpos(0, int(top.winfo_width() * 0.58))
-                    top.unbind('<Map>')
-                    self._show_props()      # иначе подписи справа не перерисовываются
-            top.bind('<Map>', place_sash)
-            top.after(200, place_sash)
+        # ширины заданы заранее (дерево ~610 px из 1040, свойства — остальное):
+        # двигать разделитель после показа ненадёжно — подписи справа не перерисовывались
 
         sr = ttk.Frame(left)
         sr.pack(fill='x', pady=(0, 6))
@@ -103,6 +136,9 @@ class EditorWindow:
         self.search.pack(side='left', fill='x', expand=True, padx=(6, 0))
         self.search.bind('<KeyRelease>', lambda e: None if e.keysym in ('Return', 'Down', 'Up')
                          else self._on_search())
+        self.logic_only = tk.BooleanVar(value=False)
+        ttk.Checkbutton(sr, text='только с логикой', variable=self.logic_only,
+                        command=self.refresh).pack(side='left', padx=(8, 0))
         self.search.bind('<Return>', lambda e: self._next_hit())
         self.search.bind('<Down>', lambda e: self._next_hit())
 
@@ -110,11 +146,14 @@ class EditorWindow:
         btns.pack(fill='x', side='bottom', pady=(6, 0))
         tf = ttk.Frame(left)
         tf.pack(fill='both', expand=True)
-        self.tree = ttk.Treeview(tf, columns=('code',), selectmode='browse')
+        self.tree = ttk.Treeview(tf, columns=('code', 'logic'), selectmode='browse')
         self.tree.heading('#0', text='Пункт')
-        self.tree.column('#0', width=240, minwidth=160, stretch=True)
+        self.tree.column('#0', width=300, minwidth=160, stretch=True)
         self.tree.heading('code', text='Код')
-        self.tree.column('code', width=64, stretch=False, anchor='w')
+        self.tree.column('code', width=56, stretch=False, anchor='w')
+        self.tree.heading('logic', text='Логика')
+        self.tree.column('logic', width=64, stretch=False, anchor='w')
+        self.tree.tag_configure('broken', foreground=WARN_TEXT)
         sb = ttk.Scrollbar(tf, orient='vertical', command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
         self.tree.pack(side='left', fill='both', expand=True)
@@ -200,11 +239,23 @@ class EditorWindow:
         self.findings = lint(wb)
         flagged = {c for f in self.findings for c in f.code.split(',')}
         tree.delete(*tree.get_children())
+        badges = {it.id: self._badge(it) for it in wb.items}
+        keep = None
+        if self.logic_only.get():       # только пункты с логикой (и их родители)
+            keep = set()
+            for c, b in badges.items():
+                while b and c and c not in keep:
+                    keep.add(c)
+                    c = wb.by_id[c].parent
         for it in wb.items:
+            if keep is not None and it.id not in keep:
+                continue
             parent = it.parent if it.parent in wb.by_id else ''
+            badge = badges[it.id]
             tree.insert(parent, 'end', iid=it.id, text=self._label(it.id, flagged),
-                        values=(it.id,), open=it.id in opened,
+                        values=(it.id, badge), open=it.id in opened or keep is not None,
                         tags=('section',) if it.level == 1 else
+                        ('broken',) if badge.startswith('⚠') else
                         ('finding',) if it.id in flagged else ())
         if sel and tree.exists(sel[0]):
             self._focus(sel[0])
@@ -287,6 +338,23 @@ class EditorWindow:
         sel = self.lint_tab.selection()
         if sel:
             self.fix_finding(self.findings[int(sel[0].split('|')[0])])
+
+    def _badge(self, it) -> str:
+        """Значок колонки «Логика»: И · если · ≠ · ⚠ (сломанная ссылка)."""
+        from .engine import effective_condition
+        wb = self.draft.wb
+        parts = []
+        if it.children and it.combine == 'and':
+            parts.append('И')
+        cond = effective_condition(it, wb) if not it.children else None
+        if cond:
+            parts.append('⚠ если' if condition_refs(cond) - set(wb.by_id) else 'если')
+        if any(it.id in p for p in wb.not_together):
+            parts.append('≠')
+        return ' '.join(parts)
+
+    def _on_wheel(self, e):
+        self.props_canvas.yview_scroll(-1 if e.delta > 0 else 1, 'units')
 
     def _all_nodes(self):
         stack = list(self.tree.get_children())
@@ -393,6 +461,9 @@ class EditorWindow:
                 extra.append(f'есть в эталонах: {refs}')
             if words:
                 extra.append(f'слов врача: {words} (будут удалены)')
+            users = self.draft.referrers(code)
+            if users:
+                extra.append(f'на него ссылаются условия: {", ".join(users)}')
             what = ' с вариантами' if it.children else ''
             text = f'Удалить «{_ws(it.text)[:60]}»{what}?'
             if extra:
@@ -461,6 +532,13 @@ class EditorWindow:
             ttk.Label(p, text=f'{key} · {"задано" if it.method else "угадано по названию"}',
                       font=app.f_small, foreground=MUTED).pack(anchor='w')
 
+            ttk.Label(p, text='Сочетание', font=app.f_small).pack(anchor='w', pady=(10, 0))
+            self.combine_var = tk.StringVar(value=_COMBINE[it.combine])
+            cb = ttk.Combobox(p, textvariable=self.combine_var, state='readonly',
+                              values=list(_COMBINE.values()))
+            cb.pack(fill='x')
+            cb.bind('<<ComboboxSelected>>', lambda e: self._on_combine())
+
             ttk.Label(p, text='Если врач не написал', font=app.f_small).pack(anchor='w', pady=(10, 0))
             self._variant_by_label = {_ws(c.text): c.id for c in it.children}
             # без умолчания группа «по словам» не выводится, а встроенное правило
@@ -482,8 +560,13 @@ class EditorWindow:
             cb.pack(fill='x')
             cb.bind('<<ComboboxSelected>>', lambda e: self._on_when())
             if not it.when:
-                ttk.Label(p, text='угадано по эталонам', font=app.f_small,
+                ttk.Label(p, text='угадано', font=app.f_small,
                           foreground=MUTED).pack(anchor='w')
+            self._condition_frame(p, it, key)
+        if kind in ('single', 'variant'):
+            self._pairs_frame(p, it)
+        self.cond_rows = self.cond_rows if kind == 'single' else []
+        self._xlsx_line(p, it)
 
         if kind != 'section':
             ttk.Label(p, text='Слова упоминания (через запятую)',
@@ -504,10 +587,13 @@ class EditorWindow:
             ttk.Label(p, text=row_text(it, group), wraplength=360, foreground=ACCENT,
                       justify='left').pack(anchor='w')
 
-        subtree = {code} | {i.id for i in wb.items if inside(i.id, code)}
-        used = sum(any(c in subtree for c, _ in r.lines) for r in wb.references)
-        ttk.Label(p, text=f'есть в эталонах: {used} из {len(wb.references)}', font=app.f_small,
-                  foreground=MUTED).pack(anchor='w', pady=(10, 0))
+        # самопроверка: где пункт выводится сейчас и где его ждут эталоны
+        from .engine import build_protocol
+        got = sum(code in {c for c, _ in build_protocol(wb, r.raw).lines} for r in wb.references)
+        want = sum(any(c == code for c, _ in r.lines) for r in wb.references)
+        self.refs_lbl = ttk.Label(p, text=f'по эталонам: выводится в {got}, ожидается в {want}',
+                                  font=app.f_small, foreground=MUTED if got == want else WARN_TEXT)
+        self.refs_lbl.pack(anchor='w', pady=(10, 0))
 
     def _edit_text_soon(self):
         self.top.after_idle(lambda: (self.text_box.focus_set(),
@@ -594,6 +680,207 @@ class EditorWindow:
     def _on_default(self):
         code = self._props_code
         self.draft.set_prop(code, 'default', self._variant_by_label.get(self.default_var.get()))
+        self._done(code)
+
+    # ---------- логика: условие, пары, сочетание ----------
+    def _fields(self, own: str) -> dict[str, str]:
+        """Подпись поля → код: группы и отдельные пункты по порядку протокола."""
+        wb = self.draft.wb
+        return {f'{it.id}  {_ws(it.text).rstrip(":")[:40]}': it.id for it in wb.items
+                if it.level == 2 and it.id != own}
+
+    def _values(self, field: str) -> dict[str, tuple[str, str | None]]:
+        """Подпись значения → ('is', вариант) / ('mentioned', None)."""
+        it = self.draft.wb.by_id.get(field)
+        out = {}
+        if it is not None and it.children:
+            out = {f'= {t}': ('is', c) for c, t in _short_variants(it).items()}
+        out[_MENTIONED] = ('mentioned', None)
+        return out
+
+    def _condition_frame(self, p, it, when: str):
+        from .engine import effective_condition
+        self.cond_rows: list[_CondRow] = []
+        cond = effective_condition(it, self.draft.wb)
+        need = when == 'condition'
+        box = ttk.LabelFrame(p, text='Условие' if need else 'Условие (необязательно)', padding=8)
+        box.pack(fill='x', pady=(10, 0))
+        self.cond_note = ttk.Label(box, text='', font=self.app.f_small, foreground=MUTED,
+                                   wraplength=340, justify='left')
+        if cond is not None and not is_simple(cond):
+            ttk.Label(box, text=format_condition(cond), wraplength=340).pack(anchor='w')
+            self.cond_note.configure(text='Сложное условие — правится в xlsx (лист «Настройки»).')
+            self.cond_note.pack(anchor='w', pady=(4, 0))
+            return
+        key = 'any' if cond and 'any' in cond else 'all'
+        head = ttk.Frame(box)
+        head.pack(fill='x')
+        ttk.Label(head, text='Выводить, если верны' if need else '…и только если верны').pack(side='left')
+        self.cond_join_var = tk.StringVar(value=_JOIN[key])
+        cb = ttk.Combobox(head, textvariable=self.cond_join_var, state='readonly', width=13,
+                          values=list(_JOIN.values()))
+        cb.pack(side='left', padx=(6, 0))
+        cb.bind('<<ComboboxSelected>>', lambda e: self.apply_condition())
+        self._rows_box = ttk.Frame(box)
+        self._rows_box.pack(fill='x', pady=(6, 0))
+        self._field_codes = self._fields(it.id)
+        for row in (cond or {}).get(key, []):
+            self._add_row(row)
+        ttk.Button(box, text='+ Строка', command=self.add_cond_row).pack(anchor='w', pady=(6, 0))
+        first = next((r for r in (cond or {}).get(key, [])), None)
+        if first:
+            f = self.draft.wb.by_id.get(first['field'])
+            what = f'«{_ws(f.text).rstrip(":")}»' if f else first['field']
+            self.cond_note.configure(text=f'{what} не назван в записи — строка не выводится.')
+        elif need:
+            self.cond_note.configure(text='Условия нет — строка не выводится. Добавьте строку.')
+        self.cond_note.pack(anchor='w', pady=(4, 0))
+        if not it.condition and cond:
+            ttk.Label(box, text='угадано по названию', font=self.app.f_small,
+                      foreground=MUTED).pack(anchor='w')
+
+    def _add_row(self, row: dict | None = None):
+        i = len(self.cond_rows)
+        fr = ttk.Frame(self._rows_box)
+        fr.pack(fill='x', pady=1)
+        not_var = tk.BooleanVar(value=bool(row and row.get('not')))
+        ttk.Checkbutton(fr, text='НЕ', variable=not_var,
+                        command=self.apply_condition).grid(row=0, column=0, sticky='w')
+        field_var, value_var = tk.StringVar(), tk.StringVar()
+        fcb = ttk.Combobox(fr, textvariable=field_var, state='readonly', width=18,
+                           values=list(self._field_codes))
+        fcb.grid(row=0, column=1, sticky='ew', padx=(4, 0))
+        vcb = ttk.Combobox(fr, textvariable=value_var, state='readonly', width=16)
+        vcb.grid(row=0, column=2, sticky='ew', padx=(4, 0))
+        ttk.Button(fr, text='✕', width=3,
+                   command=lambda: self.remove_cond_row(i)).grid(row=0, column=3, padx=(4, 0))
+        fr.columnconfigure(1, weight=3)
+        fr.columnconfigure(2, weight=2)
+        r = _CondRow(not_var, field_var, value_var, vcb)
+        self.cond_rows.append(r)
+        if row:
+            field = row['field']
+            label = next((k for k, v in self._field_codes.items() if v == field), None)
+            if label is None:                       # пункт удалён
+                label = f'{field} — пункта нет'
+                self._field_codes[label] = field
+                ttk.Label(fr, text=f'⚠ Пункт {field} удалён. Выберите другой или уберите строку.',
+                          foreground=WARN_TEXT, font=self.app.f_small).grid(
+                              row=1, column=0, columnspan=4, sticky='w')
+            field_var.set(label)
+            values = self._values(field)
+            vcb['values'] = list(values)
+            want = ('mentioned', None) if row.get('mentioned') else ('is', row.get('is'))
+            value_var.set(next((k for k, v in values.items() if v == want),
+                               f'= {row.get("is")}' if 'is' in row else _MENTIONED))
+        fcb.bind('<<ComboboxSelected>>', lambda e: self._on_cond_field(i))
+        vcb.bind('<<ComboboxSelected>>', lambda e: self.apply_condition())
+
+    def add_cond_row(self):
+        if hasattr(self, '_rows_box') and self._rows_box.winfo_exists():
+            self._add_row()
+
+    def _on_cond_field(self, i: int):
+        r = self.cond_rows[i]
+        values = self._values(self._field_codes.get(r.field_var.get(), ''))
+        r.value_cb['values'] = list(values)
+        r.value_var.set(next(iter(values)))
+        self.apply_condition()
+
+    def remove_cond_row(self, i: int):
+        self.cond_rows[i].field_var.set('')
+        self.apply_condition(skip=i)
+
+    def _condition_from_rows(self, skip: int | None = None) -> dict | None:
+        rows = []
+        for k, r in enumerate(self.cond_rows):
+            field = self._field_codes.get(r.field_var.get())
+            if k == skip or not field:
+                continue
+            kind, variant = self._values(field).get(r.value_var.get(), (None, None))
+            if kind is None and r.value_var.get().startswith('= '):     # вариант удалён
+                kind, variant = 'is', r.value_var.get()[2:]
+            if kind is None:
+                continue
+            node = {'field': field, 'is': variant} if kind == 'is' else \
+                {'field': field, 'mentioned': True}
+            if r.not_var.get():
+                node['not'] = True
+            rows.append(node)
+        if not rows:
+            return None
+        key = next(k for k, v in _JOIN.items() if v == self.cond_join_var.get())
+        return {key: rows}
+
+    def apply_condition(self, skip: int | None = None):
+        code = self._props_code
+        if code is None:
+            return
+        node = self._condition_from_rows(skip)
+        if node != self.draft.wb.by_id[code].condition:
+            self.draft.set_condition(code, node)
+        self._done(code)
+
+    @property
+    def pairs_list(self) -> list[str]:
+        code = self._props_code
+        return [b if a == code else a for a, b in self.draft.wb.not_together if code in (a, b)]
+
+    def _pairs_frame(self, p, it):
+        wb = self.draft.wb
+        box = ttk.LabelFrame(p, text='Не вместе с', padding=8)
+        box.pack(fill='x', pady=(10, 0))
+        for other in self.pairs_list:
+            row = ttk.Frame(box)
+            row.pack(fill='x', pady=1)
+            text = _ws(wb.by_id[other].text)[:40] if other in wb.by_id else 'пункта нет'
+            ttk.Label(row, text=f'{other}  {text}').pack(side='left')
+            ttk.Button(row, text='Перейти', command=lambda o=other: self.select(o)).pack(side='right')
+            ttk.Button(row, text='✕', width=3,
+                       command=lambda o=other: self.remove_pair(o)).pack(side='right', padx=(0, 4))
+        choices = {f'{x.id}  {_ws(x.text)[:40]}': x.id for x in wb.items
+                   if x.level >= 2 and not x.children and x.id != it.id
+                   and x.id not in self.pairs_list}
+        add = ttk.Frame(box)
+        add.pack(fill='x', pady=(4, 0))
+        ttk.Label(add, text='+ не вместе с').pack(side='left')
+        var = tk.StringVar()
+        cb = ttk.Combobox(add, textvariable=var, state='readonly', values=list(choices))
+        cb.pack(side='left', fill='x', expand=True, padx=(6, 0))
+        cb.bind('<<ComboboxSelected>>', lambda e: self.add_pair(choices[var.get()]))
+        ttk.Label(box, text='Если в записи оба — в протоколе будут оба с пометкой «проверьте».',
+                  font=self.app.f_small, foreground=MUTED, wraplength=340,
+                  justify='left').pack(anchor='w', pady=(4, 0))
+
+    def add_pair(self, other: str):
+        code = self._props_code
+        self.draft.add_pair(code, other)
+        self._done(code)
+
+    def remove_pair(self, other: str):
+        code = self._props_code
+        self.draft.remove_pair(code, other)
+        self._done(code)
+
+    def _xlsx_line(self, p, it):
+        from .engine import effective_condition
+        parts = []
+        if it.children and it.combine == 'and':
+            parts.append('Сочетание И')
+        cond = effective_condition(it, self.draft.wb) if not it.children else None
+        if cond:
+            parts.append(f'Условие {format_condition(cond)}')
+        if self.pairs_list:
+            parts.append(f'Не вместе с {", ".join(self.pairs_list)}')
+        self.xlsx_lbl = ttk.Label(p, text=('В xlsx, лист «Настройки»: ' + ' · '.join(parts))
+                                  if parts else '', font=self.app.f_small, foreground=MUTED,
+                                  wraplength=360, justify='left')
+        self.xlsx_lbl.pack(anchor='w', pady=(6, 0))
+
+    def _on_combine(self):
+        code = self._props_code
+        value = next(k for k, v in _COMBINE.items() if v == self.combine_var.get())
+        self.draft.set_combine(code, value)
         self._done(code)
 
     def _on_when(self):
