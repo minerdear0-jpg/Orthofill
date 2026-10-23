@@ -42,6 +42,7 @@ class Item:
     combine: str | None = None      # группа: 'and' — все упомянутые варианты; None — один (ИЛИ)
     condition: dict | None = None   # пункт: условие (orthofill/logic.py), None — нет
     cancel: str | None = None       # код дочерней ветки «нет» (отмена пункта, 0.5) — не вариант
+    star: bool = False              # «*» в ID_CLASS: по умолчанию сразу в отчёте (обязательное)
 
 
 def is_cancel(it: Item) -> bool:
@@ -107,6 +108,11 @@ class Workbook:
     not_together: list[tuple[str, str]] = field(default_factory=list)   # пары (a, b), a < b
     phrases: list[Phrase] = field(default_factory=list)
 
+    @property
+    def star_mode(self) -> bool:
+        """Пресет со «*»: в отчёт само идёт только отмеченное звёздочкой (0.5 b7)."""
+        return any(it.star for it in self.items)
+
 
 def clean_code(value) -> str:
     s = str(value).strip().lower()
@@ -167,7 +173,8 @@ def load_workbook_file(path: str | Path) -> Workbook:
     for rownum, (a, b, c, d, e, f) in enumerate(_row_values(ws, header), start=header + 1):
         # --- классификатор
         if a is not None and str(a).strip():
-            code = clean_code(a)
+            star = '*' in str(a)                    # «4j*» — обязательное (0.5 b7)
+            code = clean_code(str(a).replace('*', ''))
             text = clean_text(b)
             if not _CODE_RE.fullmatch(code):
                 problems.append(f'строка {rownum}: код «{code}» не по формату (1, 1a, 1a1)')
@@ -178,7 +185,7 @@ def load_workbook_file(path: str | Path) -> Workbook:
             else:
                 lvl = _level(code)
                 parent = None if lvl == 1 else code[:2] if lvl == 3 else code[0]
-                it = Item(code, text, lvl, parent)
+                it = Item(code, text, lvl, parent, star=star)
                 items.append(it)
                 by_id[code] = it
         # --- эталоны

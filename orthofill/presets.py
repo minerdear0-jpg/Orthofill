@@ -82,13 +82,14 @@ class PresetStore:
         for pos, it in enumerate(items):
             self._db.execute(
                 'INSERT INTO preset_items (preset_id, pos, code, text, level, parent, orphan,'
-                ' method, when_, default_code, words_json, combine, condition_json)'
-                ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                ' method, when_, default_code, words_json, combine, condition_json, star)'
+                ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 (pid, pos, it.id, it.text, it.level, it.parent, int(it.orphan),
                  it.method, it.when, it.default,
                  json.dumps(it.words, ensure_ascii=False) if it.words else None,
                  it.combine,
-                 json.dumps(it.condition, ensure_ascii=False) if it.condition else None))
+                 json.dumps(it.condition, ensure_ascii=False) if it.condition else None,
+                 int(it.star)))
         self._db.execute('DELETE FROM not_together WHERE preset_id=?', (pid,))
         self._db.executemany('INSERT OR IGNORE INTO not_together VALUES (?,?,?)',
                              [(pid, *sorted(p)) for p in pairs])
@@ -144,13 +145,14 @@ class PresetStore:
                                   (preset_id,)).fetchone()
         items, by_id = [], {}
         for (code, text, level, parent, orphan, method, when, default, words, combine,
-             cond) in db.execute(
+             cond, star) in db.execute(
                 'SELECT code, text, level, parent, orphan, method, when_, default_code, words_json,'
-                ' combine, condition_json FROM preset_items WHERE preset_id=? ORDER BY pos',
+                ' combine, condition_json, star FROM preset_items WHERE preset_id=? ORDER BY pos',
                 (preset_id,)):
             it = Item(code, text, level, parent, bool(orphan), method=method, when=when,
                       default=default, words=json.loads(words) if words else [],
-                      combine=combine, condition=json.loads(cond) if cond else None)
+                      combine=combine, condition=json.loads(cond) if cond else None,
+                      star=bool(star))
             items.append(it)
             by_id[code] = it
         link_tree(items, by_id)
@@ -162,7 +164,7 @@ class PresetStore:
             'SELECT name, template, uses FROM phrases WHERE preset_id=? ORDER BY pos', (preset_id,))]
         content = json.dumps(
             {'items': [[i.id, i.text, i.method, i.when, i.default, i.words, i.combine,
-                        i.condition] for i in items],
+                        i.condition] + ([True] if i.star else []) for i in items],
              'references': [[r.case_id, r.raw, r.lines] for r in refs],
              'not_together': pairs,
              'phrases': [[p.name, p.template] for p in phrases]}, ensure_ascii=False)

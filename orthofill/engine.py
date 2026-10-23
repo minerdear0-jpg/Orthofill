@@ -79,18 +79,68 @@ def rule_kind(group: Item) -> str | None:
     return None if kind == 'words' else kind
 
 
-def _guess_when(it: Item, refs: list[set[str]]) -> str:
-    """«Всегда» — если пункт есть больше чем в половине эталонов (без эталонов — всегда)."""
-    used = sum(it.id in r for r in refs)
-    return 'always' if not refs or used * 2 > len(refs) else 'mentioned'
+def _guess_when(it: Item, refs: list[tuple[set[str], set[str]]]) -> str:
+    """«Всегда» — из идеальных результатов пресета (эталоны, колонки E–F): пункт есть
+    в результате больше чем в половине примеров, где запись о нём не говорит. Если
+    пункт попал в результат из-за слов записи примера — это «может попасть», не
+    «всегда» (заказчик 22.10). Без эталонов — всегда."""
+    if not refs:
+        return 'always'
+    free = [codes for codes, said in refs if it.id not in said]
+    if not free:
+        return 'mentioned'
+    used = sum(it.id in codes for codes in free)
+    return 'always' if used * 2 > len(free) else 'mentioned'
+
+
+_EVIDENCE: dict = {}       # доводы эталонов — на набор (эталоны + пункты + словарь)
+
+
+def _ref_evidence(wb: Workbook) -> list[tuple[set[str], set[str]]]:
+    """(коды идеального результата, коды, сказанные в записи примера) — по эталонам.
+    Пресет перезагружается часто (новый объект) — кэш по содержимому, не по объекту."""
+    key = (tuple((r.raw, tuple(c for c, _ in r.lines)) for r in wb.references if r.lines),
+           tuple((it.id, it.text, tuple(it.words)) for it in wb.items),
+           tuple((e.word, e.code) for e in wb.dictionary))
+    if key in _EVIDENCE:
+        return _EVIDENCE[key]
+    out = []
+    for r in wb.references:
+        if not r.lines:
+            continue
+        codes = {c for c, _ in r.lines}
+        try:
+            said = _Said(_Ctx(r.raw, wb))
+            said_codes = {it.id for it in wb.items if not it.children and it.id in said}
+        except Exception:
+            said_codes = set()
+        out.append((codes, said_codes))
+    if len(_EVIDENCE) > 64:
+        _EVIDENCE.clear()
+    _EVIDENCE[key] = out
+    return out
+
+
+def star_default(group: Item) -> list[Item]:
+    """Варианты группы по умолчанию в пресете со «*»: отмеченные звёздочкой (группа «ИЛИ» —
+    первый), звёздочка у самой группы — её первый вариант."""
+    marked = [c for c in group.children if c.star]
+    if not marked and group.star and group.children:
+        marked = group.children[:1]
+    return marked if group.combine == 'and' else marked[:1]
 
 
 def _effective_when(wb: Workbook) -> dict[str, str]:
     """«Когда в протоколе» для отдельных пунктов: заданное или угаданное заново
     по текущим эталонам (угаданное не хранится — меняется с эталонами)."""
-    refs = [{code for code, _ in case.lines} for case in wb.references if case.lines]
-    out = {it.id: it.when or _guess_when(it, refs) for it in wb.items
-           if not it.children and it.level == 2 and not it.orphan}
+    if wb.star_mode:            # «*» в ID_CLASS — только отмеченное, без угадывания
+        out = {it.id: 'always' if it.star else (it.when if it.when in ('always', 'condition')
+                                                 else 'mentioned')
+               for it in wb.items if not it.children and it.level == 2 and not it.orphan}
+    else:
+        refs = _ref_evidence(wb)
+        out = {it.id: it.when or _guess_when(it, refs) for it in wb.items
+               if not it.children and it.level == 2 and not it.orphan}
     for it in wb.items:             # пункт-сирота: по угаданному условию или по упоминанию
         if it.orphan:
             out[it.id] = it.when or ('condition' if guess_condition(it, wb) else 'mentioned')
@@ -122,7 +172,7 @@ def guess_settings(wb: Workbook) -> None:
     """Записать угаданные свойства в пункты как явные (для редактора и экспорта
     «как сейчас работает»). Разбор их не требует: build_protocol угадывает сам.
     Заданное явно не трогается."""
-    refs = [{code for code, _ in case.lines} for case in wb.references if case.lines]
+    refs = _ref_evidence(wb)
     for it in wb.items:
         if it.children:
             if it.method is None:
@@ -553,7 +603,12 @@ def _select_complaint(section: Item, ctx: _Ctx) -> Item | None:
             hit = _first(ch, lambda t: option_key in t)
             if hit:
                 return hit
-    default = _first(ch, lambda t: re.search(r'не\s+пред[ъь]явл', t)) or (ch[0] if ch else None)
+    if ctx.wb is not None and ctx.wb.star_mode:     # «*»: жалоба по умолчанию — только отмеченная
+        default = next((c for c in ch if c.star), None)
+        if default is None and re.search(r'жалоб\w*\s+нет|нет\s+жалоб|без\s+жалоб|не\s+пред[ъь]явл', n):
+            default = _first(ch, lambda t: re.search(r'не\s+пред[ъь]явл', t))   # написано врачом
+    else:
+        default = _first(ch, lambda t: re.search(r'не\s+пред[ъь]явл', t)) or (ch[0] if ch else None)
     # Новые жалобы ищем только в том, что написано после «жалобы…»,
     # иначе «брекет-система удовлетворительная» дала бы «на отклеивание брекета»
     said = ctx.f['complaint_text']
@@ -563,7 +618,8 @@ def _select_complaint(section: Item, ctx: _Ctx) -> Item | None:
             return hit
         ctx.warn(f'жалоба не распознана: «{said}» — выберите вручную')
         return default
-    ctx.default('жалоб нет')
+    if default is not None:
+        ctx.default('жалоб нет')
     return default
 
 
@@ -776,6 +832,27 @@ def _select_rule_or_default(group: Item, ctx: _Ctx):
         ctx.flag(group.id, 'челюсть не указана — дуга на обеих')
     if sel and rule_kind(group) is None:
         ctx.flag(group.id, 'выбрано по словам записи — проверьте')
+    if ctx.wb is not None and ctx.wb.star_mode:
+        # «*»: само в отчёт — только отмеченный вариант; выключено лишь то, что правило
+        # подставило бы и в пустую запись, молча (без «проверьте») — написанное врачом
+        # остаётся, даже если в нём чего-то не хватает
+        silent = (len(ctx.warnings) == n_warn and len(ctx.flags.get(group.id, [])) == n_flag
+                  and _ids(sel) == _rule_baseline(group, ctx.wb))
+        if sel and (record or not silent):
+            _pick(ctx, group, sel, record)
+            return sel
+        del ctx.defaults[n_def:]
+        marked = star_default(group)
+        target = group.default and next((c for c in group.children if c.id == group.default), None)
+        if not marked and target is not None:      # умолчание, выбранное в редакторе
+            marked = [target]
+        if not marked:
+            if sel is not None and not record and len(ctx.warnings) == n_warn:
+                ctx.flags.pop(group.id, None)
+            return None
+        ctx.default(f'{group.text.strip()} {", ".join(c.text.strip() for c in marked)}')
+        _pick(ctx, group, marked, False)
+        return marked if group.combine == 'and' else marked[0]
     target = group.default and next((c for c in group.children if c.id == group.default), None)
     if not target or len(ctx.warnings) > n_warn:
         _pick(ctx, group, sel, record)
@@ -787,6 +864,28 @@ def _select_rule_or_default(group: Item, ctx: _Ctx):
         return target
     _pick(ctx, group, sel, record)
     return sel
+
+
+def _ids(sel) -> tuple[str, ...]:
+    if sel is None:
+        return ()
+    return tuple(c.id for c in (sel if isinstance(sel, list) else [sel]))
+
+
+_BASELINE: dict = {}
+
+
+def _rule_baseline(group: Item, wb: Workbook) -> tuple[str, ...]:
+    """Что правило группы выбирает на пустой записи (его «по умолчанию»)."""
+    key = (wb.sha256, id(wb), group.id, tuple((c.id, c.text) for c in group.children))
+    if key not in _BASELINE:
+        ctx = _Ctx('', wb)
+        ctx.current = group.id
+        try:
+            _BASELINE[key] = _ids(_select(group, ctx))
+        except Exception:
+            _BASELINE[key] = ()
+    return _BASELINE[key]
 
 
 def _pick(ctx: _Ctx, group: Item, sel, record: bool) -> None:

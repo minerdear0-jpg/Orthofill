@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS phrases (
     template TEXT NOT NULL, uses INTEGER NOT NULL DEFAULT 0, created_at TEXT,
     PRIMARY KEY (preset_id, name));
 """
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _now() -> str:
@@ -122,6 +122,8 @@ class Journal:
             for col in ('combine', 'condition_json'):
                 if col not in cols:
                     self._db.execute(f'ALTER TABLE preset_items ADD COLUMN {col} TEXT')
+            if 'star' not in cols:          # 5: «*» в ID_CLASS — обязательное свойство
+                self._db.execute('ALTER TABLE preset_items ADD COLUMN star INTEGER')
             self._db.executescript(_SCHEMA_V3)
             self._db.executescript(_SCHEMA_V4)
             self._db.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')

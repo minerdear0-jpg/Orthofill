@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import re
 import tkinter as tk
+from tkinter import font as tkfont
 
+from .colorize import line_spans, section_color
+from .distinct import diff_spans, distinct_labels
 from .predict import predict, rank
 from .shell import SEP, Path, children_of, format_path, is_leaf, parse_line, resolve, split_line
 
 _SEL_BG, _BORDER = '#e3eef7', '#1f5f8b'
+PREVIEW_W = 0.40        # 0.5 b7: панель «Просмотр» — доля ширины тела окна (справа, поверх)
+_DIFF_BG, _MUTED = '#fff1c2', '#8a8a83'
 
 
 class ShellBox:
@@ -42,10 +47,25 @@ class ShellBox:
         self._stat = {'tabs': 0, 'questions': 0, 'typed': 0, 'bad': False}
         text.tag_configure('shell_bad', foreground='#b42318', underline=True)
         text.tag_configure('shell_ok', foreground='#1b1b1a')
+        # 0.5 b7: раскраска — раздел своим цветом, группа полужирная, лист с зелёной чертой
+        bold = tkfont.Font(font=app.f_text)
+        bold.configure(weight='bold')
+        text.tag_configure('sh_grp', font=bold)
+        text.tag_configure('sh_leaf', foreground='#1b1b1a', underline=True)
+        try:                                        # Tk 8.7+: цвет черты
+            text.tag_configure('sh_leaf', underlinefg='#1f7a3f')
+        except tk.TclError:
+            pass
+        text.tag_configure('sh_sep', foreground='#b9b8b1')
+        text.tag_configure('sh_typed', background=_DIFF_BG)
+        text.tag_configure('sh_cur', background=_SEL_BG)
+        text.tag_raise('shell_bad')
+        self._sec_tags: set[str] = set()
         bg = text.cget('background')
         self.tail = tk.Label(text, text='', fg='#8a95a1', bg=bg, font=app.f_small, bd=0, padx=4)
         self.frame = tk.Frame(app.root, bg='#ffffff', highlightthickness=1,
                               highlightbackground='#c9ced4')
+        self._build_preview()
         for seq, fn in (('<Tab>', self._tab), ('<Return>', self._enter), ('<KP_Enter>', self._enter),
                         ('<Escape>', self._escape), ('<Up>', lambda e: self._move(-1)),
                         ('<Down>', lambda e: self._move(1)), ('<KeyPress>', self._keypress),
@@ -94,6 +114,83 @@ class ShellBox:
         self.ghost = ''
         self.tail.place_forget()
         self.frame.place_forget()
+        self._hide_preview()
+        self.text.tag_remove('sh_cur', '1.0', 'end')
+
+    # ---------- просмотр (0.5 b7) ----------
+    def _build_preview(self):
+        app = self.app
+        p = self.preview = tk.Frame(app.root, bg='#ffffff', highlightthickness=1,
+                                    highlightbackground='#c9ced4')
+        tk.Label(p, text='Просмотр', font=app.f_small, fg='#6b6b65', bg='#ffffff',
+                 anchor='w').pack(fill='x', padx=10, pady=(8, 0))
+        self.preview_path = tk.Label(p, text='', font=app.f_small, fg=_MUTED, bg='#ffffff',
+                                     anchor='w', justify='left')
+        self.preview_path.pack(fill='x', padx=10, pady=(2, 6))
+        self.preview_txt = tk.Text(p, wrap='word', height=6, font=app.f_text, relief='flat',
+                                   borderwidth=0, highlightthickness=0, padx=8, pady=2,
+                                   bg='#ffffff', cursor='arrow', takefocus=0)
+        self.preview_txt.tag_configure('diff', background=_DIFF_BG)
+        self.preview_txt.pack(fill='both', expand=True, padx=(10, 6))
+        self.preview_sib = tk.Label(p, text='', font=app.f_small, fg='#52514e', bg='#ffffff',
+                                    anchor='nw', justify='left')
+        self.preview_sib.pack(fill='x', padx=10, pady=(6, 10))
+        p.bind('<Configure>', lambda e: self.preview_sib.configure(
+            wraplength=max(100, e.width - 24)))
+        self.preview_shown = False
+
+    def _preview_on(self) -> bool:
+        return self.app.mode != 'narrow'     # узко: справа места нет — хватает подписей карусели
+
+    def _hide_preview(self):
+        if getattr(self, 'preview_shown', False):
+            self.preview.place_forget()
+            self.preview_shown = False
+
+    def _show_preview(self):
+        if not (self._preview_on() and 0 <= self.selected < len(self.choices)):
+            self._hide_preview()
+            return
+        wb, path = self.wb, self.choices[self.selected]
+        node = wb.by_id[path[-1]]
+        text = ' '.join(node.text.split())
+        sib = self._neighbour(self.selected)
+        where = ' › '.join(' '.join(wb.by_id[c].text.split())[:40] for c in path[:-1])
+        self.preview_path.configure(text=f'{where} › {path[-1]}' if where else path[-1])
+        t = self.preview_txt
+        t.configure(state='normal')
+        t.delete('1.0', 'end')
+        t.insert('1.0', text)
+        if sib is not None:
+            other = ' '.join(wb.by_id[sib[-1]].text.split())
+            for s, e in diff_spans(text, other):
+                t.tag_add('diff', f'1.0+{s}c', f'1.0+{e}c')
+            spans = diff_spans(other, text)
+            tail = other[spans[0][0]:] if spans else other
+            self.preview_sib.configure(
+                text=f'Соседний вариант ({sib[-1]}): {"…" if spans and spans[0][0] else ""}{tail}')
+        else:
+            self.preview_sib.configure(text='')
+        t.configure(state='disabled')
+        if not self.preview_shown:
+            b, root = self.app.body, self.app.root
+            root.update_idletasks()
+            x = b.winfo_rootx() - root.winfo_rootx() + int(b.winfo_width() * (1 - PREVIEW_W))
+            y = b.winfo_rooty() - root.winfo_rooty()
+            self.preview.place(x=x, y=y, width=int(b.winfo_width() * PREVIEW_W),
+                               height=b.winfo_height())
+            self.preview_shown = True
+        self.preview.lift()
+        self.frame.lift()
+
+    def _neighbour(self, i: int) -> Path | None:
+        """Соседний вариант той же группы: следующий, у последнего — предыдущий."""
+        path = self.choices[i]
+        same = [p for p in self.choices[:40] if p[:-1] == path[:-1] and p != path]
+        if not same:
+            return None
+        after = [p for p in same if self.choices.index(p) > i]
+        return after[0] if after else same[-1]
 
     def _track(self, action: str, **data):
         try:
@@ -229,7 +326,8 @@ class ShellBox:
     def _mark_ok(self):
         """Готовые строки (путь до конца) — отмечены."""
         t = self.text
-        t.tag_remove('shell_ok', '1.0', 'end')
+        for tag in ('shell_ok', 'sh_grp', 'sh_leaf', 'sh_sep', 'sh_typed', *self._sec_tags):
+            t.tag_remove(tag, '1.0', 'end')
         if not self.on():
             return
         last = int(t.index('end-1c').split('.')[0])
@@ -238,6 +336,31 @@ class ShellBox:
             path = parse_line(self.wb, line) if SEP.strip() in line else None
             if path and is_leaf(self.wb, path):
                 t.tag_add('shell_ok', f'{n}.0', f'{n}.end')
+            for s, e, kind in line_spans(self.wb, line):
+                t.tag_add(self._color_tag(kind), f'{n}.{s}', f'{n}.{e}')
+
+    def _color_tag(self, kind: str) -> str:
+        if not kind.startswith('sec:'):
+            return f'sh_{kind}'
+        k = int(kind[4:])
+        tag = f'sh_sec{k}'
+        if tag not in self._sec_tags:
+            self.text.tag_configure(tag, foreground=section_color(k))
+            self.text.tag_lower(tag, 'sh_cur')
+            self._sec_tags.add(tag)
+        return tag
+
+    def _mark_current_level(self):
+        """Уровень, который сейчас выбирают (последний перед курсором), — подсвечен."""
+        t = self.text
+        t.tag_remove('sh_cur', '1.0', 'end')
+        n, line = self._line()
+        col = int(t.index('insert').split('.')[1])
+        levels = [(s, e) for s, e, k in line_spans(self.wb, line)
+                  if (k == 'grp' or k.startswith('sec:')) and e <= col]
+        if levels:
+            s, e = levels[-1]
+            t.tag_add('sh_cur', f'{n}.{s}', f'{n}.{e}')
 
     # ---------- показ ----------
     def _show_ghost(self):
@@ -263,6 +386,7 @@ class ShellBox:
                 row.configure(bg=bg, highlightbackground=_BORDER if sel else '#ffffff')
                 for w in row.winfo_children():
                     w.configure(bg=bg)
+        self._show_preview()
         return True
 
     def _shift_tab(self):
@@ -277,6 +401,7 @@ class ShellBox:
         for w in f.winfo_children():
             w.destroy()
         self._rows = []
+        labels = distinct_labels([self.wb.by_id[p[-1]].text for p in choices[:40]])
         for i, path in enumerate(choices[:40]):
             sel = i == selected
             star = '★ ' if path in self._stars else ''
@@ -286,7 +411,7 @@ class ShellBox:
             self._rows.append(row)
             bg = row.cget('bg')
             node = self.wb.by_id[path[-1]]
-            tk.Label(row, text=star + ' '.join(node.text.split())[:90], font=app.f_text, bg=bg,
+            tk.Label(row, text=star + labels[i][:90], font=app.f_text, bg=bg,
                      anchor='w').pack(side='left', padx=(6, 0))
             where = ' › '.join(' '.join(self.wb.by_id[c].text.split())[:24] for c in path[:-1])
             tk.Label(row, text=f'{where}  {path[-1]}'.strip(), font=app.f_small, fg='#8a95a1',
@@ -299,13 +424,23 @@ class ShellBox:
         f.update_idletasks()
         rx = t.winfo_rootx() - app.root.winfo_rootx()
         ry = t.winfo_rooty() - app.root.winfo_rooty()
-        width = min(t.winfo_width(), 640)
+        room = t.winfo_width()
+        if self._preview_on() and selected >= 0:       # справа — просмотр, карусель левее
+            b = app.body
+            room = min(room, b.winfo_rootx() + int(b.winfo_width() * (1 - PREVIEW_W))
+                       - t.winfo_rootx() - 4)
+        width = max(160, min(room, 640))
         top = ry + box[1] + box[3] + 2
         if top + f.winfo_reqheight() > app.root.winfo_height():
             top = max(0, ry + box[1] - f.winfo_reqheight() - 2)
-        f.place(x=rx + min(box[0], max(0, t.winfo_width() - width)), y=top, width=width)
+        f.place(x=rx + min(box[0], max(0, room - width)), y=top, width=width)
         f.lift()
         self.list_shown = True
+        self._mark_current_level()
+        if selected >= 0:
+            self._show_preview()
+        else:
+            self._hide_preview()
 
     # ---------- правка строки ----------
     def _set_line(self, n: int, new: str):
