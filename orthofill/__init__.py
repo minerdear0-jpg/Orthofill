@@ -3,5 +3,5 @@ import time as _time
 
 STARTED = _time.perf_counter()     # для замера времени запуска (телеметрия)
 
-__version__ = "0.5.0b7"
-VERSION_LABEL = "0.5 beta 7"
+__version__ = "0.5.0b8"
+VERSION_LABEL = "0.5 beta 8"

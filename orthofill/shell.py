@@ -27,6 +27,9 @@ class Resolution:
     choices: list[Path]         # что показать списком
     bad_word: int | None        # первое слово, после которого кандидатов нет
     rest: list[str] = field(default_factory=list)   # слова, совпавшие ниже common (Tab их сохраняет)
+    counts: dict[Path, int] = field(default_factory=dict)   # сколько подходящих значений за вариантом
+    starts: set[Path] = field(default_factory=set)          # варианты, чьё значение начинается с набранного
+    rests: dict[Path, list[str]] = field(default_factory=dict)  # выбрали ветку — эти слова остаются в строке
 
 
 def _key(s: str) -> str:
@@ -52,7 +55,7 @@ class _Node:
     """Слова узла в приведённом виде (canon) с пометкой «латиница в пресете»;
     слова через дефис — и целиком, и частями; пары соседних слов (первое от 3
     букв) — для слитного набора; числа — значащими цифрами."""
-    __slots__ = ('words', 'pairs', 'nums')
+    __slots__ = ('words', 'pairs', 'nums', 'plain')
 
     def __init__(self, text: str):
         # римские цифры («по I классу») — числа, не буквы (иначе «I» = союз «и»)
@@ -69,6 +72,7 @@ class _Node:
             if len(parts) > 1:
                 words += [(canon(p), is_latin(p)) for p in parts if p]
         self.words = words
+        self.plain = plain              # слова по порядку, без частей — для точного имени
         self.pairs = [(a, b) for a, b in zip(plain, plain[1:]) if len(a) >= 3]
         self.nums = [_num(t) for t in _NUM.findall(low)] + romans
 
@@ -286,12 +290,16 @@ def _resolve(wb: Workbook, done: Path, typed: str, toks: list[_Tok],
         syn.setdefault(canon(w), set()).add(c)
     nodes = _nodes(wb)
     paths = _endpoints(wb, done)
+    own = any(any(w.startswith(t.text) for w in syn) for t in toks)    # слово из словаря врача
+    exact = set() if own else _exact(nodes, paths, done, toks)
+    if exact:                                   # набрано точное имя узла — только внутри него
+        paths = [p for p in paths if exact & set(p[len(done):])]
     if not toks:
         common = _common(paths) if paths else done
         nxt = children_of(wb, common[-1] if common else None) if not is_leaf(wb, common) else []
         return Resolution(paths, common, [common + (c.id,) for c in nxt], None)
     leaves: list[Path] = []
-    choices: list[Path] = []
+    ats: dict[Path, list[int]] = {}
     first_at: list[int] = []
     best = 0
     for p in paths:
@@ -313,14 +321,58 @@ def _resolve(wb: Workbook, done: Path, typed: str, toks: list[_Tok],
             if not leaves:
                 first_at = at
             leaves.append(p)
-            ch = p[:last_at + 1]
-            if ch not in choices:
-                choices.append(ch)
+            ats[p] = at
     common = _common(leaves) if leaves else done
+    choices, counts, starts = _fork(nodes, leaves, common, toks)
+    raw_words = typed.split()
+    rests = {}
+    for ch in choices:                          # слова, совпавшие ниже выбранной ветки
+        at = ats[next(p for p in leaves if p[:len(ch)] == ch)]
+        rests[ch] = [raw_words[j] for t, a in zip(toks, at) if a >= len(ch) for j in t.raws]
     raw = typed.split()
     rest = [raw[j] for t, a in zip(toks, first_at) if a >= len(common) for j in t.raws]
+    if leaves and not rest and len(common) > len(done):     # всё набранное — в общем: его и дописать
+        choices, counts, rests = [common], {common: len(leaves)}, {common: []}
+        starts = {common} if starts else set()
     bad = None if leaves else (toks[best].raws[0] if best < len(toks) else len(raw) - 1)
-    return Resolution(leaves, common, choices, bad, rest)
+    return Resolution(leaves, common, choices, bad, rest, counts, starts, rests)
+
+
+def _fork(nodes: dict[str, _Node], leaves: list[Path], common: Path, toks: list[_Tok]):
+    """Варианты на развилке — уровень сразу после общего (как в fish): ветка, за
+    которой одно подходящее значение, — сразу это значение. Число значений за
+    вариантом и «начинается с набранного» (первое слово значения)."""
+    first = toks[0].text if toks and not toks[0].num else None
+    under: dict[Path, list[Path]] = {}
+    for p in leaves:
+        under.setdefault(p[:len(common) + 1], []).append(p)
+    choices: list[Path] = []
+    counts: dict[Path, int] = {}
+    starts: set[Path] = set()
+    for key, ps in under.items():
+        ch = ps[0] if len(ps) == 1 else key
+        choices.append(ch)
+        counts[ch] = len(ps)
+        if first and any(nodes[p[-1]].plain[:1] and nodes[p[-1]].plain[0].startswith(first)
+                         for p in ps):
+            starts.add(ch)
+    return choices, counts, starts
+
+
+def _has_children(paths: list[Path], code: str) -> bool:
+    return any(code in p[:-1] for p in paths)
+
+
+def _exact(nodes: dict[str, _Node], paths: list[Path], done: Path, toks: list[_Tok]) -> set[str]:
+    """Разделы и ветки, имя которых набрано целиком (только слова, без чисел):
+    «лечение» — раздел «Лечение:». Совпало несколько — все (ничего не угадываем).
+    Значение с точным именем ничего не прячет — оно и так первое («начинается с»)."""
+    if not toks or any(t.num for t in toks):
+        return set()
+    want = [t.text for t in toks]
+    codes = {c for p in paths for c in p[len(done):]}
+    return {c for c in codes if not nodes[c].nums and nodes[c].plain == want
+            and _has_children(paths, c)}      # раздел или ветка; значение — не фильтр
 
 
 def _common(paths: list[Path]) -> Path:

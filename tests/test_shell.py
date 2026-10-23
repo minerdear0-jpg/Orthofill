@@ -15,12 +15,14 @@ def test_unique_word_anywhere(wb):        # «лигатурная» → оди�
     assert r.leaves == [('2', '2b', '2b2')] and r.common == ('2', '2b', '2b2')
 
 def test_short_prefix_is_ambiguous(wb):    # «лиг»: лигатурная / лигатур / лигатурой — не угадывать
-    r = resolve(wb, (), 'лиг', {})
-    assert {p[-1] for p in r.choices} == {'2b2', '4d', '4e', '4h1'} and len(r.leaves) > 1
+    r = resolve(wb, (), 'лиг', {})           # 0.5 b8: развилка — 2b2 (одно) и «Лечение ›»
+    assert {p[-1] for p in r.choices} == {'2b2', '4'} and len(r.leaves) > 1
+    assert {p[-1] for p in resolve(wb, ('4',), 'лиг', {}).choices} >= {'4d', '4e', '4h1'}
 
 def test_ambiguous_shows_matched_nodes(wb):   # «ду» — узлы, где совпало слово, с путём
     r = resolve(wb, (), 'ду', {})
-    assert {p[-1] for p in r.choices} == {'1c', '1d', '3e2', '4b', '4c', '4g', '4h1', '4h2', '5c'}
+    assert {p[-1] for p in r.choices} == {'1', '3e2', '4', '5c'}     # 0.5 b8: развилка по разделам
+    assert {p[-1] for p in resolve(wb, ('4',), 'ду', {}).choices} == {'4b', '4c', '4g', '4h1', '4h2'}
     assert r.common == ()
 
 def test_second_word_narrows(wb):         # «ду вер» → группа 4b (21 вариант)
@@ -203,3 +205,60 @@ def test_typed_roman_and_single_latin(wb):
     assert '3g2' in [p[-1] for p in resolve(wb, ('3', '3g'), 'ii', {}).leaves]
     assert resolve(wb, ('3', '3g'), 'iii', {}).common[-1] == '3g3'
     assert resolve(wb, (), 'аппарат s', {}).leaves == []          # «s» ≠ предлог «с»
+
+
+# ---------- 0.5 b8: точное имя родителя ----------
+def test_exact_parent_name_narrows(wb):
+    r = resolve(wb, (), 'лечение', {})
+    assert r.common == ('4',) and all(p[0] == '4' for p in r.leaves)
+
+
+def test_exact_parent_other_layout(wb):
+    assert resolve(wb, (), 'ktxtybt', {}).common == ('4',)
+
+
+def test_not_exact_keeps_all(wb):
+    r = resolve(wb, (), 'лечен', {})
+    assert {p[0] for p in r.leaves} >= {'2', '4'}
+
+
+def test_same_name_twice_keeps_both(wb):
+    r = resolve(wb, ('4',), 'на верхней челюсти', {})
+    assert {p[1] for p in r.leaves} >= {'4d', '4e'}
+
+
+# ---------- 0.5 b8: развилка и «начинается с» ----------
+def test_fork_branches(wb):
+    r = resolve(wb, (), '014', {})
+    assert r.common == ('4',)
+    assert r.choices == [('4', '4b'), ('4', '4c')]
+    assert r.counts[('4', '4b')] == 3 and r.counts[('4', '4c')] == 3
+
+
+def test_fork_inside_branch_gives_values(wb):
+    r = resolve(wb, ('4', '4b'), '014', {})
+    assert len(r.choices) == 3 and all(len(p) == 3 for p in r.choices)
+
+
+def test_single_value_branch_collapses(wb):
+    r = resolve(wb, (), 'осмо', {})
+    assert ('4', '4a') in r.choices and ('3',) in r.choices
+    assert r.counts[('3',)] == 3
+    assert ('4', '4a') in r.starts and not any(p[0] == '1' for p in r.starts)
+
+
+def test_unique_unchanged(wb):
+    r = resolve(wb, (), 'перепел', {})
+    assert r.leaves == [('4', '4f', '4f1')]
+
+
+# ---------- 0.5 b8, итоговая проверка ----------
+def test_exact_leaf_name_hides_nothing(wb):     # точное имя значения — не фильтр
+    r = resolve(wb, ('4',), 'на верхней челюсти', {})
+    assert {p[1] for p in r.leaves} >= {'4b', '4d', '4e'}
+    assert len(resolve(wb, (), 'осмотр', {}).leaves) == 5
+
+
+def test_exact_name_keeps_synonyms(wb):         # словарь врача сильнее точного имени
+    r = resolve(wb, (), 'лечение', {'лечение': '3a'})
+    assert any(p[-1] == '3a' for p in r.leaves)

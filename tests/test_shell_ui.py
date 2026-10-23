@@ -51,7 +51,7 @@ def test_tab_expands_unique(sh):
 def test_ambiguous_list(sh):
     _type(sh, 'лиг')
     sb = sh.shell_box
-    assert sb.list_shown and {c[-1] for c in sb.choices} == {'2b2', '4d', '4e', '4h1'}
+    assert sb.list_shown and {c[-1] for c in sb.choices} == {'2b2', '4'}    # 0.5 b8: развилка
     _key(sh, 'Tab')
     assert _raw(sh) == 'лиг'
 
@@ -564,6 +564,8 @@ def test_typing_narrows_carousel(sh):
     sb = sh.shell_box
     assert sb.list_shown and sb.selected == 0
     _key(sh, 'Tab')
+    assert sb.selected == 0             # 0.5 b8: первый Tab — первый вариант (не перескакивает)
+    _key(sh, 'Tab')
     assert sb.selected == 1
 
 
@@ -741,3 +743,47 @@ def test_comma_mode_no_colors(sh):
     sh.root.update()
     tags = {t for t in sh.raw_txt.tag_names() if t.startswith('sh_') and sh.raw_txt.tag_ranges(t)}
     assert tags == set()
+
+
+# ---------- 0.5 b8: родитель и развилка ----------
+def test_tab_parent_shows_its_props(sh):        # «лечение» + Tab — только свойства «Лечение»
+    _type(sh, 'лечение')
+    _key(sh, 'Tab')
+    assert _raw(sh) == 'Лечение: › ' and len(sh.shell_box.choices) == 11
+    assert all(c[0] == '4' for c in sh.shell_box.choices)
+
+
+def test_osmo_first(sh):                        # «осмо» + Tab + Enter → Лечение › осмотр.
+    _type(sh, 'осмо')
+    _key(sh, 'Tab')
+    assert sh.shell_box.choices[sh.shell_box.selected] == ('4', '4a')
+    _key(sh, 'Return')
+    assert _raw(sh).split('\n')[0] == 'Лечение: › осмотр.'
+
+
+def test_fork_then_value(sh):                   # «014»: ветка, затем значение
+    _type(sh, '014')
+    _key(sh, 'Tab')
+    sb = sh.shell_box
+    assert sb.choices == [('4', '4b'), ('4', '4c')]
+    _key(sh, 'Return')
+    assert _raw(sh).startswith('Лечение: › Смена дуги на верхней челюсти › ')
+    assert len(sb.choices) == 3 and all(c[1] == '4b' for c in sb.choices)
+    _key(sh, 'Return')
+    assert _raw(sh).split('\n')[0] == \
+        'Лечение: › Смена дуги на верхней челюсти › на верхней челюсти 0.014" NiTi'
+
+
+def test_fork_click_keeps_rest(sh):             # мышью — так же, набранное не теряется
+    _type(sh, '014')
+    _key(sh, 'Tab')
+    sh.shell_box._click(1)
+    sh.root.update()
+    assert 'нижней' in _raw(sh) and len(sh.shell_box.choices) == 3
+
+
+def test_branch_row_has_count(sh):              # у ветки — « ›» и число подходящих
+    _type(sh, '014')
+    _key(sh, 'Tab')
+    texts = [w.cget('text') for w in sh.shell_box._rows[0].winfo_children()]
+    assert any(t.rstrip().endswith('›') for t in texts) and any('3' in t.split() for t in texts)
