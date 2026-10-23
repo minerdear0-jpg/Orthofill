@@ -52,7 +52,7 @@ class _Node:
     """Слова узла в приведённом виде (canon) с пометкой «латиница в пресете»;
     слова через дефис — и целиком, и частями; пары соседних слов (первое от 3
     букв) — для слитного набора; числа — значащими цифрами."""
-    __slots__ = ('words', 'pairs', 'nums')
+    __slots__ = ('words', 'pairs', 'nums', 'plain')
 
     def __init__(self, text: str):
         # римские цифры («по I классу») — числа, не буквы (иначе «I» = союз «и»)
@@ -69,6 +69,7 @@ class _Node:
             if len(parts) > 1:
                 words += [(canon(p), is_latin(p)) for p in parts if p]
         self.words = words
+        self.plain = plain              # слова по порядку, без частей — для точного имени
         self.pairs = [(a, b) for a, b in zip(plain, plain[1:]) if len(a) >= 3]
         self.nums = [_num(t) for t in _NUM.findall(low)] + romans
 
@@ -286,6 +287,9 @@ def _resolve(wb: Workbook, done: Path, typed: str, toks: list[_Tok],
         syn.setdefault(canon(w), set()).add(c)
     nodes = _nodes(wb)
     paths = _endpoints(wb, done)
+    exact = _exact(nodes, paths, done, toks)
+    if exact:                                   # набрано точное имя узла — только внутри него
+        paths = [p for p in paths if exact & set(p[len(done):])]
     if not toks:
         common = _common(paths) if paths else done
         nxt = children_of(wb, common[-1] if common else None) if not is_leaf(wb, common) else []
@@ -321,6 +325,16 @@ def _resolve(wb: Workbook, done: Path, typed: str, toks: list[_Tok],
     rest = [raw[j] for t, a in zip(toks, first_at) if a >= len(common) for j in t.raws]
     bad = None if leaves else (toks[best].raws[0] if best < len(toks) else len(raw) - 1)
     return Resolution(leaves, common, choices, bad, rest)
+
+
+def _exact(nodes: dict[str, _Node], paths: list[Path], done: Path, toks: list[_Tok]) -> set[str]:
+    """Узлы, имя которых набрано целиком (только слова, без чисел): «лечение» —
+    раздел «Лечение:». Совпало несколько — все (ничего не угадываем)."""
+    if not toks or any(t.num for t in toks):
+        return set()
+    want = [t.text for t in toks]
+    codes = {c for p in paths for c in p[len(done):]}
+    return {c for c in codes if not nodes[c].nums and nodes[c].plain == want}
 
 
 def _common(paths: list[Path]) -> Path:

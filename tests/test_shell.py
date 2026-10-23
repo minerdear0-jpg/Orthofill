@@ -203,3 +203,23 @@ def test_typed_roman_and_single_latin(wb):
     assert '3g2' in [p[-1] for p in resolve(wb, ('3', '3g'), 'ii', {}).leaves]
     assert resolve(wb, ('3', '3g'), 'iii', {}).common[-1] == '3g3'
     assert resolve(wb, (), 'аппарат s', {}).leaves == []          # «s» ≠ предлог «с»
+
+
+# ---------- 0.5 b8: точное имя родителя ----------
+def test_exact_parent_name_narrows(wb):
+    r = resolve(wb, (), 'лечение', {})
+    assert r.common == ('4',) and all(p[0] == '4' for p in r.leaves)
+
+
+def test_exact_parent_other_layout(wb):
+    assert resolve(wb, (), 'ktxtybt', {}).common == ('4',)
+
+
+def test_not_exact_keeps_all(wb):
+    r = resolve(wb, (), 'лечен', {})
+    assert {p[0] for p in r.leaves} >= {'2', '4'}
+
+
+def test_same_name_twice_keeps_both(wb):
+    r = resolve(wb, ('4',), 'на верхней челюсти', {})
+    assert {p[1] for p in r.leaves} >= {'4d', '4e'}
