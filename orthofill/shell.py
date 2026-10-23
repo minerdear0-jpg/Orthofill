@@ -27,6 +27,8 @@ class Resolution:
     choices: list[Path]         # что показать списком
     bad_word: int | None        # первое слово, после которого кандидатов нет
     rest: list[str] = field(default_factory=list)   # слова, совпавшие ниже common (Tab их сохраняет)
+    counts: dict[Path, int] = field(default_factory=dict)   # сколько подходящих значений за вариантом
+    starts: set[Path] = field(default_factory=set)          # варианты, чьё значение начинается с набранного
 
 
 def _key(s: str) -> str:
@@ -295,7 +297,6 @@ def _resolve(wb: Workbook, done: Path, typed: str, toks: list[_Tok],
         nxt = children_of(wb, common[-1] if common else None) if not is_leaf(wb, common) else []
         return Resolution(paths, common, [common + (c.id,) for c in nxt], None)
     leaves: list[Path] = []
-    choices: list[Path] = []
     first_at: list[int] = []
     best = 0
     for p in paths:
@@ -317,14 +318,36 @@ def _resolve(wb: Workbook, done: Path, typed: str, toks: list[_Tok],
             if not leaves:
                 first_at = at
             leaves.append(p)
-            ch = p[:last_at + 1]
-            if ch not in choices:
-                choices.append(ch)
     common = _common(leaves) if leaves else done
+    choices, counts, starts = _fork(nodes, leaves, common, toks)
     raw = typed.split()
     rest = [raw[j] for t, a in zip(toks, first_at) if a >= len(common) for j in t.raws]
+    if leaves and not rest and len(common) > len(done):     # всё набранное — в общем: его и дописать
+        choices, counts = [common], {common: len(leaves)}
+        starts = {common} if starts else set()
     bad = None if leaves else (toks[best].raws[0] if best < len(toks) else len(raw) - 1)
-    return Resolution(leaves, common, choices, bad, rest)
+    return Resolution(leaves, common, choices, bad, rest, counts, starts)
+
+
+def _fork(nodes: dict[str, _Node], leaves: list[Path], common: Path, toks: list[_Tok]):
+    """Варианты на развилке — уровень сразу после общего (как в fish): ветка, за
+    которой одно подходящее значение, — сразу это значение. Число значений за
+    вариантом и «начинается с набранного» (первое слово значения)."""
+    first = toks[0].text if toks and not toks[0].num else None
+    under: dict[Path, list[Path]] = {}
+    for p in leaves:
+        under.setdefault(p[:len(common) + 1], []).append(p)
+    choices: list[Path] = []
+    counts: dict[Path, int] = {}
+    starts: set[Path] = set()
+    for key, ps in under.items():
+        ch = ps[0] if len(ps) == 1 else key
+        choices.append(ch)
+        counts[ch] = len(ps)
+        if first and any(nodes[p[-1]].plain[:1] and nodes[p[-1]].plain[0].startswith(first)
+                         for p in ps):
+            starts.add(ch)
+    return choices, counts, starts
 
 
 def _exact(nodes: dict[str, _Node], paths: list[Path], done: Path, toks: list[_Tok]) -> set[str]:

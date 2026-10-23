@@ -51,7 +51,7 @@ def test_tab_expands_unique(sh):
 def test_ambiguous_list(sh):
     _type(sh, 'лиг')
     sb = sh.shell_box
-    assert sb.list_shown and {c[-1] for c in sb.choices} == {'2b2', '4d', '4e', '4h1'}
+    assert sb.list_shown and {c[-1] for c in sb.choices} == {'2b2', '4'}    # 0.5 b8: развилка
     _key(sh, 'Tab')
     assert _raw(sh) == 'лиг'
 
