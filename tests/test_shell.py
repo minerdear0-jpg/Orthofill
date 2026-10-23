@@ -250,3 +250,15 @@ def test_single_value_branch_collapses(wb):
 def test_unique_unchanged(wb):
     r = resolve(wb, (), 'перепел', {})
     assert r.leaves == [('4', '4f', '4f1')]
+
+
+# ---------- 0.5 b8, итоговая проверка ----------
+def test_exact_leaf_name_hides_nothing(wb):     # точное имя значения — не фильтр
+    r = resolve(wb, ('4',), 'на верхней челюсти', {})
+    assert {p[1] for p in r.leaves} >= {'4b', '4d', '4e'}
+    assert len(resolve(wb, (), 'осмотр', {}).leaves) == 5
+
+
+def test_exact_name_keeps_synonyms(wb):         # словарь врача сильнее точного имени
+    r = resolve(wb, (), 'лечение', {'лечение': '3a'})
+    assert any(p[-1] == '3a' for p in r.leaves)

@@ -290,7 +290,8 @@ def _resolve(wb: Workbook, done: Path, typed: str, toks: list[_Tok],
         syn.setdefault(canon(w), set()).add(c)
     nodes = _nodes(wb)
     paths = _endpoints(wb, done)
-    exact = _exact(nodes, paths, done, toks)
+    own = any(any(w.startswith(t.text) for w in syn) for t in toks)    # слово из словаря врача
+    exact = set() if own else _exact(nodes, paths, done, toks)
     if exact:                                   # набрано точное имя узла — только внутри него
         paths = [p for p in paths if exact & set(p[len(done):])]
     if not toks:
@@ -358,14 +359,20 @@ def _fork(nodes: dict[str, _Node], leaves: list[Path], common: Path, toks: list[
     return choices, counts, starts
 
 
+def _has_children(paths: list[Path], code: str) -> bool:
+    return any(code in p[:-1] for p in paths)
+
+
 def _exact(nodes: dict[str, _Node], paths: list[Path], done: Path, toks: list[_Tok]) -> set[str]:
-    """Узлы, имя которых набрано целиком (только слова, без чисел): «лечение» —
-    раздел «Лечение:». Совпало несколько — все (ничего не угадываем)."""
+    """Разделы и ветки, имя которых набрано целиком (только слова, без чисел):
+    «лечение» — раздел «Лечение:». Совпало несколько — все (ничего не угадываем).
+    Значение с точным именем ничего не прячет — оно и так первое («начинается с»)."""
     if not toks or any(t.num for t in toks):
         return set()
     want = [t.text for t in toks]
     codes = {c for p in paths for c in p[len(done):]}
-    return {c for c in codes if not nodes[c].nums and nodes[c].plain == want}
+    return {c for c in codes if not nodes[c].nums and nodes[c].plain == want
+            and _has_children(paths, c)}      # раздел или ветка; значение — не фильтр
 
 
 def _common(paths: list[Path]) -> Path:
