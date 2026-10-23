@@ -27,6 +27,7 @@ class ShellBox:
     def __init__(self, app, text: tk.Text):
         self.app, self.text = app, text
         self.choices: list[Path] = []
+        self._counts: dict = {}
         self.selected = -1
         self.ghost = ''
         self._ghost_target: tuple | None = None   # (путь, оставшиеся слова) — куда → допишет
@@ -242,11 +243,26 @@ class ShellBox:
             self._ghost_target = (target, [] if unique else r.rest)
             self._show_ghost()
         if not unique and len(r.choices) > 1:
-            self._show_list(self._rank(r.choices), 0)     # карусель: первый выбран, Tab — дальше
+            self._show_list(self._order(r), 0, r.counts)     # карусель: первый выбран, Tab — дальше
 
     # ---------- предсказание (0.5 b2) ----------
     def _rank(self, paths):
         return rank(paths, self.app.ctl.path_stats())
+
+    def _order(self, r) -> list[Path]:
+        """Варианты поиска: «начинается с набранного» — первыми, внутри — частые
+        у врача, затем порядок файла."""
+        return sorted(self._rank(r.choices), key=lambda p: p not in r.starts)
+
+    def _take(self, path: Path) -> bool:
+        """Принять вариант карусели; ветка развилки — с недописанными словами
+        («014» → ветка «верхней» → дальше только её 014)."""
+        rest: list[str] = []
+        if not is_leaf(self.wb, path):
+            _, _, done, typed, _ = self._state()
+            if done is not None and typed.strip():
+                rest = resolve(self.wb, done, typed, self.app.ctl.shell_synonyms()).rests.get(path, [])
+        return self._accept(path, rest)
 
     def _note_paths(self, n: int) -> list[Path]:
         """Готовые строки записи: ниже курсора, затем выше — последний элемент —
@@ -395,8 +411,9 @@ class ShellBox:
         self._cycle(-1)
         return 'break'              # в оболочке Shift+Tab не уводит фокус из записи
 
-    def _show_list(self, choices: list[Path], selected: int = -1):
+    def _show_list(self, choices: list[Path], selected: int = -1, counts: dict | None = None):
         self.choices, self.selected = choices, selected
+        self._counts = counts or {}         # у ветки развилки — сколько подходящих значений
         f, t, app = self.frame, self.text, self.app
         for w in f.winfo_children():
             w.destroy()
@@ -411,8 +428,13 @@ class ShellBox:
             self._rows.append(row)
             bg = row.cget('bg')
             node = self.wb.by_id[path[-1]]
-            tk.Label(row, text=star + labels[i][:90], font=app.f_text, bg=bg,
+            fork = '' if is_leaf(self.wb, path) else ' ›'
+            tk.Label(row, text=star + labels[i][:90] + fork, font=app.f_text, bg=bg,
                      anchor='w').pack(side='left', padx=(6, 0))
+            k = self._counts.get(path, 0) if fork else 0
+            if k > 1:
+                tk.Label(row, text=f' {k} ', font=app.f_small, fg='#5f6b78',
+                         bg=bg).pack(side='left', padx=(6, 0))
             where = ' › '.join(' '.join(self.wb.by_id[c].text.split())[:24] for c in path[:-1])
             tk.Label(row, text=f'{where}  {path[-1]}'.strip(), font=app.f_small, fg='#8a95a1',
                      bg=bg).pack(side='right', padx=(8, 6))
@@ -465,7 +487,7 @@ class ShellBox:
             return False
         if self._replace:
             return self._replace_level(self.choices[k])
-        return self._accept(self.choices[k])
+        return self._take(self.choices[k])
 
     def _right_at_end(self) -> bool:
         """→ в конце строки — дописать серую подсказку (как в fish), без списка."""
@@ -533,9 +555,9 @@ class ShellBox:
             return False
         if typed.strip():
             r = resolve(self.wb, done, typed, self.app.ctl.shell_synonyms())
-            ch = self._rank(r.choices) if len(r.leaves) != 1 else [r.leaves[0]]
+            ch = self._order(r) if len(r.leaves) != 1 else [r.leaves[0]]
             if ch:
-                self._show_list(ch, 0)
+                self._show_list(ch, 0, r.counts)
                 self._list_line = line
             return bool(ch)
         else:
@@ -562,6 +584,9 @@ class ShellBox:
                     self._accept(r.common, r.rest)
                     return 'break'
                 self._list_line = line
+                if self.selected == 0:          # открылся при наборе: первый Tab — первый вариант
+                    self._show_preview()
+                    return 'break'
             self._cycle(1)
             return 'break'
         if not line.strip():                          # пустая строка — карусель кандидатов
@@ -576,7 +601,7 @@ class ShellBox:
             elif r.leaves and len(r.common) > len(done):
                 self._accept(r.common, r.rest)          # неиспользованные слова — дальше в строке
             elif r.leaves:
-                self._show_list(self._rank(r.choices), 0)
+                self._show_list(self._order(r), 0, r.counts)
                 self._list_line = line
                 self._track('ambiguous', count=len(r.choices))
             return 'break'
@@ -590,7 +615,7 @@ class ShellBox:
             self._replace_level(self.choices[self.selected])
             return 'break'
         if self.list_shown and self.selected >= 0:
-            self._accept(self.choices[self.selected])
+            self._take(self.choices[self.selected])
             self._finish()
             return 'break'
         n, line, done, typed, _ = self._state()
@@ -624,7 +649,7 @@ class ShellBox:
         if not (self.on() and self.list_shown and self.choices):
             return None
         self.selected = max(0, min(len(self.choices) - 1, self.selected + step))
-        self._show_list(self.choices, self.selected)
+        self._show_list(self.choices, self.selected, self._counts)
         n, line = self._line()
         self._list_line = line          # выбрали стрелкой — Tab дальше листает, не дополняет
         return 'break'

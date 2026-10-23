@@ -29,6 +29,7 @@ class Resolution:
     rest: list[str] = field(default_factory=list)   # слова, совпавшие ниже common (Tab их сохраняет)
     counts: dict[Path, int] = field(default_factory=dict)   # сколько подходящих значений за вариантом
     starts: set[Path] = field(default_factory=set)          # варианты, чьё значение начинается с набранного
+    rests: dict[Path, list[str]] = field(default_factory=dict)  # выбрали ветку — эти слова остаются в строке
 
 
 def _key(s: str) -> str:
@@ -297,6 +298,7 @@ def _resolve(wb: Workbook, done: Path, typed: str, toks: list[_Tok],
         nxt = children_of(wb, common[-1] if common else None) if not is_leaf(wb, common) else []
         return Resolution(paths, common, [common + (c.id,) for c in nxt], None)
     leaves: list[Path] = []
+    ats: dict[Path, list[int]] = {}
     first_at: list[int] = []
     best = 0
     for p in paths:
@@ -318,15 +320,21 @@ def _resolve(wb: Workbook, done: Path, typed: str, toks: list[_Tok],
             if not leaves:
                 first_at = at
             leaves.append(p)
+            ats[p] = at
     common = _common(leaves) if leaves else done
     choices, counts, starts = _fork(nodes, leaves, common, toks)
+    raw_words = typed.split()
+    rests = {}
+    for ch in choices:                          # слова, совпавшие ниже выбранной ветки
+        at = ats[next(p for p in leaves if p[:len(ch)] == ch)]
+        rests[ch] = [raw_words[j] for t, a in zip(toks, at) if a >= len(ch) for j in t.raws]
     raw = typed.split()
     rest = [raw[j] for t, a in zip(toks, first_at) if a >= len(common) for j in t.raws]
     if leaves and not rest and len(common) > len(done):     # всё набранное — в общем: его и дописать
-        choices, counts = [common], {common: len(leaves)}
+        choices, counts, rests = [common], {common: len(leaves)}, {common: []}
         starts = {common} if starts else set()
     bad = None if leaves else (toks[best].raws[0] if best < len(toks) else len(raw) - 1)
-    return Resolution(leaves, common, choices, bad, rest, counts, starts)
+    return Resolution(leaves, common, choices, bad, rest, counts, starts, rests)
 
 
 def _fork(nodes: dict[str, _Node], leaves: list[Path], common: Path, toks: list[_Tok]):
